@@ -3,6 +3,9 @@
 use std::fmt;
 
 pub mod camera;
+pub mod demo;
+mod route;
+pub mod scene;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
