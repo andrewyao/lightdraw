@@ -138,7 +138,11 @@ mod tests {
         store.append(b"four").unwrap();
         drop(store);
         let (_, saved) = Store::open(dir.path()).unwrap();
-        assert_eq!(saved.log.len(), 4, "an append after a torn tail is readable");
+        assert_eq!(
+            saved.log.len(),
+            4,
+            "an append after a torn tail is readable"
+        );
         assert_eq!(saved.log[3], b"four");
     }
 
