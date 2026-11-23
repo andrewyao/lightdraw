@@ -482,10 +482,14 @@ impl Doc {
     fn check_structure(&self, changes: &[Change]) -> Result<(), Reject> {
         let mut placed = BTreeSet::new();
         let mut linked = BTreeSet::new();
+        // Undo of a create clears `Kind` last, so a component removed that way
+        // no longer looks like a component. Check its users like a detach.
+        let mut unkinded = BTreeSet::new();
         for c in changes {
             match c.key() {
                 PropKey::Intrinsic(IntrinsicKey::Place) => placed.insert(c.node),
                 PropKey::Intrinsic(IntrinsicKey::Component) => linked.insert(c.node),
+                PropKey::Intrinsic(IntrinsicKey::Kind) => unkinded.insert(c.node),
                 _ => false,
             };
         }
@@ -496,23 +500,20 @@ impl Doc {
                 return Err(Reject::Cycle { node: n });
             }
         }
-        for &n in &placed {
+        for &n in placed.iter().chain(&unkinded) {
             let live = self.is_live(n);
             for d in self.subtree(n) {
-                match self.kind(d) {
-                    Some(Kind::Instance) if live => linked.insert(d),
-                    Some(Kind::Component) if !live => {
-                        let users = self.users.get(&d).into_iter().flatten();
-                        if let Some(&u) = users.into_iter().find(|&&u| self.shows(u)) {
-                            return Err(Reject::ComponentInUse {
-                                component: d,
-                                instance: u,
-                            });
-                        }
-                        false
-                    }
-                    _ => false,
-                };
+                if live && self.kind(d) == Some(Kind::Instance) {
+                    linked.insert(d);
+                }
+                let gone = !live || self.kind(d) != Some(Kind::Component);
+                let mut users = self.users.get(&d).into_iter().flatten();
+                if let Some(&u) = users.find(|&&u| gone && self.shows(u)) {
+                    return Err(Reject::ComponentInUse {
+                        component: d,
+                        instance: u,
+                    });
+                }
             }
         }
         for &i in &linked {

@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2079821092ba75518cf1a21b18dceb0d265372ba5a3537ec133e2608de251290 # shrinks to ops = [Edit { who: 2, what: Detach, a: 1447471955561081042, b: 0 }, Edit { who: 0, what: Reparent, a: 13712140664599021614, b: 206533471692234088 }]
+cc d69d341465224deccbe0db55f91bada3f6f2cb2a7c7fc03cdce057af9a185dd2 # shrinks to ops = [Edit { who: 2, what: Shape, a: 0, b: 0 }, Edit { who: 0, what: Shape, a: 0, b: 0 }, Up(2), Undo(2), Up(2), Edit { who: 1, what: Instance, a: 0, b: 8197611928247463692 }, Down(1), Edit { who: 1, what: Move, a: 7071889521512979443, b: 0 }]
+cc b5e51dd6b25a299c4ca69e374304c3035175f2e921192d00124f2307798ac3e9 # shrinks to ops = [Undo(0), Undo(0), Edit { who: 0, what: Shape, a: 0, b: 0 }, Edit { who: 0, what: Shape, a: 0, b: 0 }, Edit { who: 1, what: Instance, a: 0, b: 187613167294696202 }, Up(1), Edit { who: 0, what: Shape, a: 0, b: 0 }, Edit { who: 0, what: Shape, a: 0, b: 0 }]
