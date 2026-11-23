@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+pub mod camera;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 #[cfg(not(target_arch = "wasm32"))]
