@@ -35,3 +35,22 @@ From candidate 1:
 - Candidate 1's client-side predicted rejection of cycle-closing batches. The server rejection plus shadow rollback already converges.
 - Candidate 3's own `FracIndex`. Use the `fractional_index` crate behind an opaque newtype.
 - Candidate 3's public wire enums. They leak protocol to both shells.
+
+## Figma check
+
+Source: "How Figma's multiplayer technology works" (Evan Wallace, 2019), https://www.figma.com/blog/how-figmas-multiplayer-technology-works/, fetched 2026-11-23. Quotes are from that fetch. The design was not changed on account of this section.
+
+Agrees with the post:
+
+- Parent and position as one register. The post says "the parent link and this position must both be stored as a single property so they update atomically." `Place { parent, index }` matches. The plan's separate `Parent` and `Index` keys do not, and the synthesis already corrected that.
+- Server-side cycle rejection. "Figma's multiplayer servers reject parent property updates that would cause a cycle." Matches `Reject::Cycle`.
+- Ids. "assigning every client a unique client ID and including that client ID as part of newly-created object IDs." Matches `NodeId { client, seq }`.
+- Reconnect. "the client downloads a fresh copy of the document, reapplies any offline edits on top of this latest state". Matches `Replica::rejoin`.
+
+Differs from the post:
+
+- Delete. Figma: "Removing an object deletes all data about it from the server including all of its properties." and "That data is instead stored in the undo buffer of the client that performed the delete." Ours clears only `Place`. The detached node keeps its registers on the server and every replica until `Authority::restore` collects them, and undo of delete is one `Set(Place)`. The cost is server-side garbage until restart, and undo-of-delete stops working across a restart.
+- Unacknowledged properties. Figma: "we want to discard incoming changes from the server that conflict with unacknowledged property changes." Ours does not discard them. It keeps the server's value in the pending entry's `shadow`, so a rejected batch rolls back to the server value without a refetch. The visible behavior (no flicker) is the same.
+- Transient client-side cycles. Figma's client handles them as follows: "temporarily parent these objects to each other and remove them from the tree" until the server rejects the change. Ours needs no special step. A node in a parent cycle cannot reach ROOT, so it is not live and every walk skips it until the rejection's rollback restores the shadow.
+- CRDT wording. The post: "Figma isn't using true CRDTs though." The plan's table calls the per-property LWW register "a CRDT". Ours, like Figma, is a server-ordered LWW map, not a peer-to-peer CRDT. The plan's wording overstates it.
+- Where sequencing lives. The post describes the server as "the central authority". Ours keeps that role but puts the authority's logic in `doc::Authority`, a pure state machine, so the server crate is a shell. This is a code-layout difference, not a protocol one.
