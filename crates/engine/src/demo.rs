@@ -6,6 +6,9 @@
 //! document is a bug in the fixture.
 
 use doc::library::ComponentDef;
+use glam::DVec3;
+
+use crate::camera::Camera;
 use doc::{
     Attr, Authority, Axis, Cell, CellVec, Change, Dirty, Doc, Endpoint, Extent, Intrinsic, Kind,
     NodeId, Position, Profile, Replica, Rgba,
@@ -132,6 +135,17 @@ fn place(at: [i32; 3], size: [u32; 3]) -> Vec<Attr> {
         Attr::H(Extent(size[1])),
         Attr::D(Extent(size[2])),
     ]
+}
+
+/// The view the snapshot example renders `showcase` from.
+pub fn showcase_camera() -> Camera {
+    Camera {
+        target: DVec3::new(3.0, -1.0, 1.5),
+        yaw: -0.8,
+        pitch: 0.6,
+        distance: 38.0,
+        fov_y: 50f64.to_radians(),
+    }
 }
 
 /// Ids of the interesting nodes in `showcase`.

@@ -1,17 +1,32 @@
 //! The renderer. It owns every wgpu object and builds for wasm32 and native.
+//!
+//! - `scene`   the engine's mirror of one page, refreshed from `Dirty`.
+//! - `camera`  orbit camera, rays, frusta, and the off-axis projection.
+//! - `pick`    exact ray picking and work-plane snapping.
+//! - `encode`  cull and encode one frame on the CPU.
+//! - `render`  the GPU passes. Draws into any texture view.
+//! - `demo`    fixture documents, built through a `Replica`.
 
 use std::fmt;
 
 pub mod camera;
 pub mod demo;
+pub mod encode;
+mod mesh;
 pub mod pick;
+mod render;
 mod route;
 pub mod scene;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 #[cfg(not(target_arch = "wasm32"))]
-pub use headless::{Headless, TARGET_FORMAT, write_png};
+pub use headless::{Headless, Offscreen, RenderError, TARGET_FORMAT, render_to_png, write_png};
+
+pub use camera::{Camera, View};
+pub use encode::DrawList;
+pub use render::{Output, Renderer};
+pub use scene::Scene;
 
 /// A configured device and surface, ready to draw a frame.
 #[derive(Debug)]
@@ -20,6 +35,8 @@ pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    renderer: Renderer,
+    list: DrawList,
 }
 
 #[derive(Debug)]
@@ -78,11 +95,14 @@ impl Gpu {
             .get_default_config(&adapter, width.max(1), height.max(1))
             .ok_or(InitError::UnsupportedSurface)?;
         surface.configure(&device, &config);
+        let renderer = Renderer::new(&device, config.format);
         Ok(Gpu {
             surface,
             device,
             queue,
             config,
+            renderer,
+            list: DrawList::default(),
         })
     }
 
@@ -98,21 +118,24 @@ impl Gpu {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// Fills the surface with one color. Skips the frame when the surface is
-    /// not ready, and reconfigures when it reports itself stale.
-    pub fn clear(&self, color: wgpu::Color) {
-        let frame = match self.surface.get_current_texture() {
+    /// The next surface texture. None skips the frame: the surface is not
+    /// ready, or it was stale and has been reconfigured.
+    fn acquire(&self) -> Option<wgpu::SurfaceTexture> {
+        match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
-                return;
+                None
             }
-            _ => return,
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+            _ => None,
+        }
+    }
+
+    /// Fills the surface with one color.
+    pub fn clear(&self, color: wgpu::Color) {
+        let Some(frame) = self.acquire() else { return };
+        let view = frame.texture.create_view(&Default::default());
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -131,6 +154,29 @@ impl Gpu {
             })],
             ..Default::default()
         });
+        self.queue.submit([encoder.finish()]);
+        self.queue.present(frame);
+    }
+
+    /// Draws what `camera` sees of `scene` and presents it.
+    pub fn draw(&mut self, scene: &Scene, camera: &Camera) {
+        let Some(frame) = self.acquire() else { return };
+        let view = frame.texture.create_view(&Default::default());
+        let size = [self.config.width, self.config.height];
+        self.list.encode(scene, camera, size);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
+        self.renderer.render(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            Output { view: &view, size },
+            camera,
+            &self.list,
+        );
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
     }

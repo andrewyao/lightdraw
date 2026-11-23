@@ -1,9 +1,112 @@
 //! Native offscreen rendering: a device with no surface, texture readback,
 //! and PNG output. Tests, examples, and the bench draw through this.
 
+use std::fmt;
 use std::path::Path;
 
+use doc::{Doc, Kind, NodeId};
+
 use crate::InitError;
+use crate::camera::Camera;
+use crate::encode::DrawList;
+use crate::render::{Output, Renderer};
+use crate::scene::Scene;
+
+/// A renderer drawing into a texture it can read back.
+#[derive(Debug)]
+pub struct Offscreen {
+    pub gpu: Headless,
+    renderer: Renderer,
+    target: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+impl Offscreen {
+    pub fn new(size: [u32; 2]) -> Result<Offscreen, InitError> {
+        let gpu = Headless::new()?;
+        let renderer = Renderer::new(&gpu.device, TARGET_FORMAT);
+        let target = gpu.target(size[0].max(1), size[1].max(1));
+        let view = target.create_view(&Default::default());
+        Ok(Offscreen {
+            gpu,
+            renderer,
+            target,
+            view,
+        })
+    }
+
+    pub fn size(&self) -> [u32; 2] {
+        [self.target.width(), self.target.height()]
+    }
+
+    /// Records and submits one frame. Returns without waiting for the GPU.
+    pub fn draw(&mut self, list: &DrawList, camera: &Camera) {
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
+        let size = self.size();
+        self.renderer.render(
+            &self.gpu.device,
+            &self.gpu.queue,
+            &mut encoder,
+            Output {
+                view: &self.view,
+                size,
+            },
+            camera,
+            list,
+        );
+        self.gpu.queue.submit([encoder.finish()]);
+    }
+
+    /// Tightly packed RGBA8, top row first. Waits for every submitted frame.
+    pub fn read(&self) -> Vec<u8> {
+        self.gpu.read_rgba(&self.target)
+    }
+}
+
+#[derive(Debug)]
+pub enum RenderError {
+    Init(InitError),
+    /// The document has no page to show.
+    NoPage,
+    Io(std::io::Error),
+}
+
+impl fmt::Display for RenderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RenderError::Init(e) => write!(f, "gpu: {e}"),
+            RenderError::NoPage => f.write_str("document has no page"),
+            RenderError::Io(e) => write!(f, "write: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for RenderError {}
+
+/// Renders the document's first page as `camera` sees it and writes a PNG.
+pub fn render_to_png(
+    doc: &Doc,
+    camera: &Camera,
+    size: [u32; 2],
+    path: &Path,
+) -> Result<(), RenderError> {
+    let page = doc
+        .children(NodeId::ROOT)
+        .find(|&p| doc.kind(p) == Some(Kind::Page))
+        .ok_or(RenderError::NoPage)?;
+    let scene = Scene::build(doc, page);
+    let mut off = Offscreen::new(size).map_err(RenderError::Init)?;
+    let mut list = DrawList::default();
+    list.encode(&scene, camera, off.size());
+    off.draw(&list, camera);
+    let [w, h] = off.size();
+    write_png(path, w, h, &off.read()).map_err(RenderError::Io)
+}
 
 /// A device and queue with no window.
 #[derive(Debug)]

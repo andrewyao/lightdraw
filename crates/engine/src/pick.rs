@@ -74,12 +74,13 @@ pub fn pick(scene: &Scene, ray: &Ray) -> Option<Hit> {
 }
 
 /// World axis index of the profile's u, v, and extrusion w. Must match the
-/// vertex shader's `place`.
+/// vertex shader's `place`. Each is a cyclic shift of (x, y, z), so the
+/// mesh keeps its winding on every axis.
 pub(crate) fn frame_axes(axis: Axis) -> [usize; 3] {
     match axis {
         Axis::Z => [0, 1, 2],
         Axis::X => [1, 2, 0],
-        Axis::Y => [0, 2, 1],
+        Axis::Y => [2, 0, 1],
     }
 }
 
