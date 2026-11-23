@@ -43,7 +43,9 @@ impl Gpu {
             wgpu::InstanceDescriptor::new_without_display_handle(),
         )
         .await;
-        let surface = instance.create_surface(target).map_err(InitError::Surface)?;
+        let surface = instance
+            .create_surface(target)
+            .map_err(InitError::Surface)?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 compatible_surface: Some(&surface),
@@ -65,7 +67,12 @@ impl Gpu {
             .get_default_config(&adapter, width.max(1), height.max(1))
             .ok_or(InitError::UnsupportedSurface)?;
         surface.configure(&device, &config);
-        Ok(Gpu { surface, device, queue, config })
+        Ok(Gpu {
+            surface,
+            device,
+            queue,
+            config,
+        })
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -84,24 +91,32 @@ impl Gpu {
     /// not ready, and reconfigures when it reports itself stale.
     pub fn clear(&self, color: wgpu::Color) {
         let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
                 return;
             }
             _ => return,
         };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("clear") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("clear"),
+            });
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clear"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &view,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(color), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(color),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             ..Default::default()
         });

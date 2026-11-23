@@ -3,7 +3,12 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 /// Hologram backdrop: near-black with a cyan cast.
-const CLEAR: wgpu::Color = wgpu::Color { r: 0.0, g: 0.04, b: 0.06, a: 1.0 };
+const CLEAR: wgpu::Color = wgpu::Color {
+    r: 0.0,
+    g: 0.04,
+    b: 0.06,
+    a: 1.0,
+};
 
 #[component]
 pub fn App() -> impl IntoView {
