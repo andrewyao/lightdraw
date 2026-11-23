@@ -1,0 +1,19 @@
+// A flat card with a title strip and a body text block.
+(
+    name: "Labeled card",
+    size: (6, 4, 0),
+    parts: [
+        (local: 0, parent: None, kind: Shape, attrs: [
+            X(0), Y(0), Z(0), W(6), H(4), D(0),
+            Profile(Rect), Fill((10, 60, 80, 90)), Stroke((40, 220, 255, 255)),
+        ]),
+        (local: 1, parent: None, kind: Text, attrs: [
+            X(0), Y(3), Z(0), W(6), H(1), D(0),
+            Text("Title"),
+        ]),
+        (local: 2, parent: None, kind: Text, attrs: [
+            X(0), Y(0), Z(0), W(6), H(3), D(0),
+            Text("Body"),
+        ]),
+    ],
+)

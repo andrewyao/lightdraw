@@ -1,0 +1,24 @@
+// A rack cabinet with three servers stacked inside it and a label on the front.
+(
+    name: "Server rack",
+    size: (4, 2, 9),
+    parts: [
+        (local: 0, parent: None, kind: Frame, attrs: [
+            X(0), Y(0), Z(0), W(4), H(2), D(9),
+            Stroke((40, 220, 255, 255)),
+            Text("RACK"), TextFace(NegY),
+        ]),
+        (local: 1, parent: Some(0), kind: Shape, attrs: [
+            X(0), Y(0), Z(1), W(4), H(2), D(2),
+            Profile(Rect), Fill((20, 120, 160, 120)), Text("srv-1"), TextFace(NegY),
+        ]),
+        (local: 2, parent: Some(0), kind: Shape, attrs: [
+            X(0), Y(0), Z(4), W(4), H(2), D(2),
+            Profile(Rect), Fill((20, 120, 160, 120)), Text("srv-2"), TextFace(NegY),
+        ]),
+        (local: 3, parent: Some(0), kind: Shape, attrs: [
+            X(0), Y(0), Z(7), W(4), H(2), D(2),
+            Profile(Rect), Fill((20, 120, 160, 120)), Text("srv-3"), TextFace(NegY),
+        ]),
+    ],
+)
