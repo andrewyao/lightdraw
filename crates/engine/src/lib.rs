@@ -2,6 +2,11 @@
 
 use std::fmt;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod headless;
+#[cfg(not(target_arch = "wasm32"))]
+pub use headless::{Headless, TARGET_FORMAT, write_png};
+
 /// A configured device and surface, ready to draw a frame.
 #[derive(Debug)]
 pub struct Gpu {
