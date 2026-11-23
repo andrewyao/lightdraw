@@ -1,9 +1,30 @@
 mod common;
 
-use common::{Client, ROOM, create, make, set_x, settle, sized, start, until, url};
+use common::{Client, ROOM, create, make, set_x, settle, sized, start, start_config, until, url};
 use doc::{Attr, Change, Kind, NodeId, Position, Reject};
+use server::Config;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::{Error, Message};
+
+#[tokio::test]
+async fn the_client_dist_is_served_at_the_root() {
+    let data = tempfile::tempdir().unwrap();
+    let dist = tempfile::tempdir().unwrap();
+    std::fs::write(dist.path().join("index.html"), "<p>lightdraw</p>").unwrap();
+    let server = start_config(Config::new(data.path().into(), dist.path().into())).await;
+
+    let mut http = TcpStream::connect(server.addr()).await.unwrap();
+    http.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut reply = String::new();
+    http.read_to_string(&mut reply).await.unwrap();
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    assert!(reply.ends_with("<p>lightdraw</p>"), "{reply}");
+    server.shutdown().await.unwrap();
+}
 
 #[tokio::test]
 async fn an_edit_on_one_client_reaches_the_other() {

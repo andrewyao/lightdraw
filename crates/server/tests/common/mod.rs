@@ -24,9 +24,13 @@ pub async fn start(data: &Path) -> Server {
 }
 
 pub async fn start_with(data: &Path, snapshot_every: usize) -> Server {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = Config::new(data.to_path_buf(), data.join("no-dist"));
     config.snapshot_every = snapshot_every;
+    start_config(config).await
+}
+
+pub async fn start_config(config: Config) -> Server {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     Server::start(listener, config).await.unwrap()
 }
 

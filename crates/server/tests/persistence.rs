@@ -2,6 +2,7 @@ mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use common::{Client, ROOM, eventually, make, set_x, settle, sized, start, start_with, until};
 use doc::{Attr, AttrKey, Cell, Doc, Kind, NodeId, Prop, PropKey};
@@ -196,5 +197,59 @@ async fn a_batch_whose_ack_was_lost_applies_exactly_once() {
     );
     assert_eq!(x_of(b.doc(), shape), Some(3));
     assert!(a.rejected.is_empty());
+    server.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_client_that_never_edits_still_burns_its_id() {
+    let data = tempfile::tempdir().unwrap();
+    let server = start(data.path()).await;
+    let mut first = Client::connect(server.addr()).await;
+    let id = first.rep.client();
+    first.close().await;
+    eventually(|| server.rooms().live_count() == 0).await;
+
+    let second = Client::connect(server.addr()).await;
+    assert_ne!(
+        second.rep.client(),
+        id,
+        "ids are not reissued after the room stops"
+    );
+    server.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rooms_starting_and_stopping_under_churn_lose_no_joins() {
+    let data = tempfile::tempdir().unwrap();
+    let server = start(data.path()).await;
+    let addr = server.addr();
+    let workers: Vec<_> = (0..4)
+        .map(|_| {
+            tokio::spawn(async move {
+                for _ in 0..15 {
+                    let mut c = Client::connect(addr).await;
+                    make(&mut c, Kind::Page, NodeId::ROOT, vec![]).await;
+                    c.close().await;
+                }
+            })
+        })
+        .collect();
+    let all = async {
+        for w in workers {
+            w.await.unwrap();
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), all)
+        .await
+        .expect("no join hung");
+
+    let fresh = Client::connect(addr).await;
+    let pages = fresh
+        .doc()
+        .ids()
+        .into_iter()
+        .filter(|n| fresh.doc().kind(*n) == Some(Kind::Page))
+        .count();
+    assert_eq!(pages, 60, "every acked page survived the room restarts");
     server.shutdown().await.unwrap();
 }
