@@ -4,6 +4,7 @@ use std::fmt;
 
 pub mod camera;
 pub mod demo;
+pub mod pick;
 mod route;
 pub mod scene;
 
