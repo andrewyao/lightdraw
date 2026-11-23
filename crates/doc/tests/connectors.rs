@@ -71,3 +71,37 @@ fn moving_a_frame_dirties_and_moves_a_connector_on_its_grandchild() {
     net.settle();
     net.assert_converged();
 }
+
+#[test]
+fn repointing_an_instance_dirties_connectors_attached_to_it() {
+    let (mut net, page) = room(1);
+    let small = make(&mut net, 0, Kind::Component, page, sized(0, 0, 0, 1, 1, 1));
+    let big = make(&mut net, 0, Kind::Component, page, sized(0, 9, 0, 6, 6, 6));
+    let inst = net.id(0);
+    let mut changes = create(
+        net.doc(0),
+        inst,
+        Kind::Instance,
+        page,
+        sized(20, 0, 0, 0, 0, 0),
+    );
+    changes.push(Change::intrinsic(inst, Intrinsic::Component(small)));
+    let link = net.id(0);
+    changes.extend(create(net.doc(0), link, Kind::Connector, page, vec![]));
+    changes.push(Change::intrinsic(
+        link,
+        Intrinsic::From(Endpoint::Node(inst)),
+    ));
+    changes.push(Change::intrinsic(
+        link,
+        Intrinsic::To(Endpoint::Free(CellVec::new(0, 0, 0))),
+    ));
+    net.edit(0, changes).unwrap();
+
+    let repoint = net
+        .edit(0, vec![Change::intrinsic(inst, Intrinsic::Component(big))])
+        .unwrap();
+    assert!(repoint.dirty.covers(net.doc(0), link));
+    let (from, _) = ends(net.doc(0), link).unwrap();
+    assert!(matches!(from, End::On { world, .. } if world.w.0 == 6));
+}

@@ -382,7 +382,10 @@ impl PropKey {
 
     pub(crate) fn moves(&self) -> bool {
         match self {
-            PropKey::Intrinsic(k) => matches!(k, IntrinsicKey::Kind | IntrinsicKey::Place),
+            PropKey::Intrinsic(k) => matches!(
+                k,
+                IntrinsicKey::Kind | IntrinsicKey::Place | IntrinsicKey::Component
+            ),
             PropKey::Attr(k) | PropKey::Override(_, k) => k.moves(),
         }
     }

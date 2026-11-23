@@ -193,7 +193,7 @@ impl<'a> Occurrences<'a> {
             Node::Scene(cam) => Item::Scene(cam),
             Node::Frame(body) | Node::Component(body) => {
                 let s = solid(body);
-                self.push_children(v.node, &v.via, s.world.min, v.depth + 1);
+                self.push_children(v.node, &v.via, s.world.min, v.depth.saturating_add(1));
                 Item::Group(s)
             }
             Node::Shape {
@@ -222,14 +222,19 @@ impl<'a> Occurrences<'a> {
                     min: v.origin.offset(origin),
                     ..doc.size_of(component)
                 };
+                // A live master cannot sit on a parent cycle, so its subtree is
+                // finite. In an optimistic view a master can be off the tree
+                // while an instance still shows it.
+                let expandable =
+                    doc.kind(component) == Some(Kind::Component) && doc.is_live(component);
                 let repeats = v
                     .via
                     .iter()
                     .any(|i| doc.component_of(*i) == Some(component));
-                if !repeats {
+                if expandable && !repeats {
                     let mut via = v.via.clone();
                     via.push(v.node);
-                    self.push_children(component, &via, world.min, v.depth + 1);
+                    self.push_children(component, &via, world.min, v.depth.saturating_add(1));
                 }
                 Item::Group(Solid {
                     world,

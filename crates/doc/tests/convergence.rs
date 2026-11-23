@@ -163,12 +163,24 @@ fn run(ops: &[Op]) -> (Net, Stats) {
             Op::Disconnect(who) => net.disconnect(*who),
             Op::Rejoin(who) => net.rejoin(*who),
         }
+        let who = match op {
+            Op::Edit { who, .. } | Op::Undo(who) | Op::Up(who) | Op::Down(who) => *who,
+            Op::Disconnect(who) | Op::Rejoin(who) => *who,
+        };
+        assert_walk_terminates(net.doc(who));
     }
     for who in 0..PEERS {
         net.rejoin(who);
     }
     net.settle();
     (net, stats)
+}
+
+/// An optimistic view can hold transient cycles. The full walk must still end.
+fn assert_walk_terminates(doc: &Doc) {
+    let bound = 50 * (doc.ids().len() + 1);
+    let walked = doc.occurrences(NodeId::ROOT).take(bound).count();
+    assert!(walked < bound, "occurrences did not terminate");
 }
 
 /// What `commit` promises about every state the authority reaches.

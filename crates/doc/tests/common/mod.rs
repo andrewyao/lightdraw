@@ -25,6 +25,8 @@ pub struct Peer {
 pub struct Net {
     pub auth: Authority,
     pub peers: Vec<Peer>,
+    /// Every log record the authority asked the shell to append, in order.
+    pub log: Vec<Vec<u8>>,
 }
 
 impl Net {
@@ -32,6 +34,7 @@ impl Net {
         let mut net = Net {
             auth: Authority::restore(None, []).unwrap(),
             peers: Vec::new(),
+            log: Vec::new(),
         };
         for _ in 0..n {
             let (id, step) = net.auth.connect(Replica::hello().as_bytes()).unwrap();
@@ -90,6 +93,8 @@ impl Net {
     pub fn send_raw(&mut self, i: usize, frame: &[u8]) -> Step {
         let from = self.peers[i].rep.client();
         let step = self.auth.receive(from, frame).unwrap();
+        self.log
+            .extend(step.log.iter().map(|r| r.as_bytes().to_vec()));
         self.route(&step);
         step
     }

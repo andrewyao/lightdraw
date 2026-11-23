@@ -4,6 +4,42 @@ use common::{at, create, make, place_of, room, sized};
 use doc::{Attr, Cell, Change, Endpoint, Intrinsic, Item, Kind, NodeId, Position, Reject, Rgba};
 
 #[test]
+fn walks_terminate_when_a_live_instance_shows_a_master_on_a_transient_cycle() {
+    let (mut net, page) = room(2);
+    let comp = make(&mut net, 0, Kind::Component, page, sized(0, 0, 0, 2, 2, 2));
+    make(&mut net, 0, Kind::Shape, comp, sized(0, 0, 0, 1, 1, 1));
+    let frame = make(&mut net, 0, Kind::Frame, page, vec![]);
+    let inst = net.id(1);
+    let mut changes = create(net.doc(1), inst, Kind::Instance, page, vec![]);
+    changes.push(Change::intrinsic(inst, Intrinsic::Component(comp)));
+    net.edit(1, changes).unwrap();
+    net.settle();
+
+    let into_comp = net.doc(0).slot(comp, Position::Last);
+    let into_frame = net.doc(1).slot(frame, Position::Last);
+    net.edit(0, vec![Change::place(frame, into_comp)]).unwrap();
+    net.edit(1, vec![Change::place(comp, into_frame)]).unwrap();
+    net.up(0);
+    net.up(1);
+    net.down(1);
+
+    let view = net.doc(1);
+    assert!(view.is_live(inst) && !view.is_live(comp));
+    let shown: Vec<NodeId> = view
+        .occurrences(NodeId::ROOT)
+        .take(1000)
+        .map(|o| o.id.node)
+        .collect();
+    assert_eq!(
+        shown,
+        vec![inst],
+        "an instance of a master off the tree shows as an empty group"
+    );
+    net.settle();
+    net.assert_converged();
+}
+
+#[test]
 fn concurrent_reparent_and_reorder_keep_one_writers_whole_place() {
     for reparent_first in [true, false] {
         let (mut net, page) = room(2);
