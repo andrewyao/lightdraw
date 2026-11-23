@@ -89,16 +89,26 @@ impl Authority {
             presence: HashMap::new(),
         };
         for (i, bytes) in log.into_iter().enumerate() {
-            let entry: LogEntry = wire::decode(bytes).map_err(|_| Corrupt { at: Some(i) })?;
-            if entry.seq <= room.seq {
-                continue;
+            match wire::decode(bytes).map_err(|_| Corrupt { at: Some(i) })? {
+                LogEntry::Grant { client } => {
+                    room.next_client = room.next_client.max(client.0 + 1);
+                }
+                LogEntry::Commit {
+                    seq,
+                    origin,
+                    batch,
+                    changes,
+                } => {
+                    if seq <= room.seq {
+                        continue;
+                    }
+                    for c in &changes {
+                        room.doc.apply(c);
+                    }
+                    room.seq = seq;
+                    room.settle(origin, batch);
+                }
             }
-            for c in &entry.changes {
-                room.doc.apply(c);
-            }
-            room.seq = entry.seq;
-            room.settle(entry.origin, entry.batch);
-            room.next_client = room.next_client.max(entry.origin.0 + 1);
         }
         room.doc.collect_detached();
         Ok(room)
@@ -119,18 +129,19 @@ impl Authority {
 
     /// Handles a socket's first frame. Assigns or resumes a `ClientId`. The
     /// step holds the `Welcome` for that client. An unknown `resume` id gets a
-    /// fresh id. If the resumed id still has an open socket, the shell closes
+    /// fresh id, and the step logs the grant so a restart never reissues it. If the resumed id still has an open socket, the shell closes
     /// the old socket and routes the id to the new one.
     pub fn connect(&mut self, hello: &[u8]) -> Result<(ClientId, Step), WireError> {
         let ClientMsg::Hello { resume } = wire::decode(hello)? else {
             return Err(WireError::Unexpected);
         };
-        let client = match resume {
-            Some(c) if c.0 != 0 && c.0 < self.next_client => c,
+        let (client, log) = match resume {
+            Some(c) if c.0 != 0 && c.0 < self.next_client => (c, None),
             _ => {
                 let c = ClientId(self.next_client);
                 self.next_client += 1;
-                c
+                let grant = LogRecord(wire::encode(&LogEntry::Grant { client: c }));
+                (c, Some(grant))
             }
         };
         let mut peers: Vec<_> = self.presence.iter().map(|(c, p)| (*c, p.clone())).collect();
@@ -145,7 +156,7 @@ impl Authority {
         Ok((
             client,
             Step {
-                log: None,
+                log,
                 send: vec![(To::One(client), wire::frame(&welcome))],
             },
         ))
@@ -188,7 +199,7 @@ impl Authority {
                             seq,
                             changes: changes.clone(),
                         });
-                        let log = LogRecord(wire::encode(&LogEntry {
+                        let log = LogRecord(wire::encode(&LogEntry::Commit {
                             seq,
                             origin: from,
                             batch,

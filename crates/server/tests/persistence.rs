@@ -71,7 +71,11 @@ async fn an_idle_room_snapshots_truncates_and_stops() {
     let mut a = Client::connect(server.addr()).await;
     let page = make(&mut a, Kind::Page, NodeId::ROOT, vec![]).await;
     make(&mut a, Kind::Shape, page, vec![]).await;
-    assert_eq!(log_records(data.path()), 2, "acked batches are on disk");
+    assert_eq!(
+        log_records(data.path()),
+        3,
+        "the id grant and acked batches are on disk"
+    );
     assert_eq!(server.rooms().live_count(), 1);
     let before = a.doc().encode();
 
@@ -95,14 +99,15 @@ async fn a_busy_room_snapshots_every_n_records() {
     let server = start_with(data.path(), 2).await;
     let mut a = Client::connect(server.addr()).await;
     let page = make(&mut a, Kind::Page, NodeId::ROOT, vec![]).await;
-    let shape = make(&mut a, Kind::Shape, page, vec![]).await;
     assert_eq!(
         log_records(data.path()),
         0,
-        "second record triggered a snapshot"
+        "the id grant and the page triggered a snapshot"
     );
-    acked(&mut a, set_x(shape, 1)).await;
+    let shape = make(&mut a, Kind::Shape, page, vec![]).await;
     assert_eq!(log_records(data.path()), 1);
+    acked(&mut a, set_x(shape, 1)).await;
+    assert_eq!(log_records(data.path()), 0);
     server.shutdown().await.unwrap();
 }
 
@@ -184,7 +189,11 @@ async fn a_batch_whose_ack_was_lost_applies_exactly_once() {
     settle(&mut [&mut a, &mut b]).await;
     let mut fresh = Client::connect(server.addr()).await;
     settle(&mut [&mut a, &mut fresh]).await;
-    assert_eq!(log_records(data.path()), 5, "page, shape, x=1, x=2, marker");
+    assert_eq!(
+        log_records(data.path()),
+        8,
+        "grants for a, b, fresh; page, shape, x=1, x=2, marker"
+    );
 
     a.edit_local(set_x(shape, 3));
     a.drop_socket();
@@ -192,7 +201,7 @@ async fn a_batch_whose_ack_was_lost_applies_exactly_once() {
     settle(&mut [&mut a, &mut b]).await;
     assert_eq!(
         log_records(data.path()),
-        6,
+        9,
         "a resend after rejoin applies once"
     );
     assert_eq!(x_of(b.doc(), shape), Some(3));
@@ -215,6 +224,38 @@ async fn a_client_that_never_edits_still_burns_its_id() {
         id,
         "ids are not reissued after the room stops"
     );
+    server.shutdown().await.unwrap();
+}
+
+/// Copies the room's files as they stand, which is what a crash leaves.
+fn crash_copy(data: &Path) -> tempfile::TempDir {
+    let copy = tempfile::tempdir().unwrap();
+    fs::create_dir(room_dir(copy.path())).unwrap();
+    for f in fs::read_dir(room_dir(data)).unwrap() {
+        let f = f.unwrap();
+        fs::copy(f.path(), room_dir(copy.path()).join(f.file_name())).unwrap();
+    }
+    copy
+}
+
+#[tokio::test]
+async fn an_id_granted_after_the_last_snapshot_survives_a_crash() {
+    let data = tempfile::tempdir().unwrap();
+    let server = start(data.path()).await;
+    let mut first = Client::connect(server.addr()).await;
+    make(&mut first, Kind::Page, NodeId::ROOT, vec![]).await;
+    first.close().await;
+    eventually(|| server.rooms().live_count() == 0).await;
+    let first = first.rep.client();
+
+    let silent = Client::connect(server.addr()).await;
+    let crashed = crash_copy(data.path());
+    server.shutdown().await.unwrap();
+
+    let server = start(crashed.path()).await;
+    let next = Client::connect(server.addr()).await;
+    let (got, taken) = (next.rep.client(), [first, silent.rep.client()]);
+    assert!(!taken.contains(&got), "{got:?} reissues one of {taken:?}");
     server.shutdown().await.unwrap();
 }
 

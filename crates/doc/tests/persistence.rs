@@ -1,7 +1,7 @@
 mod common;
 
 use common::{make, room, sized};
-use doc::{Attr, Authority, Cell, Change, Kind};
+use doc::{Attr, Authority, Cell, Change, ClientId, Kind, Replica};
 
 #[test]
 fn a_restored_room_matches_memory_and_still_ignores_settled_batches() {
@@ -38,4 +38,33 @@ fn a_restored_room_matches_memory_and_still_ignores_settled_batches() {
         .receive(net.peers[0].rep.client(), old.send.as_bytes())
         .unwrap();
     assert!(step.log.is_none() && step.send.is_empty());
+}
+
+fn connect(room: &mut Authority) -> (ClientId, Vec<Vec<u8>>) {
+    let (id, step) = room.connect(Replica::hello().as_bytes()).unwrap();
+    (id, step.log.iter().map(|r| r.as_bytes().to_vec()).collect())
+}
+
+#[test]
+fn an_id_granted_after_the_snapshot_is_not_reissued_after_a_crash() {
+    let mut room = Authority::restore(None, []).unwrap();
+    let (first, _) = connect(&mut room);
+    let snapshot = room.snapshot();
+    let (second, log) = connect(&mut room);
+
+    for replay in [log.clone(), [log.clone(), log.clone()].concat()] {
+        let mut back =
+            Authority::restore(Some(&snapshot), replay.iter().map(Vec::as_slice)).unwrap();
+        let (third, _) = connect(&mut back);
+        assert!(
+            third != first && third != second,
+            "{third:?} reissues {first:?} or {second:?}"
+        );
+    }
+
+    let (_, step) = room.connect(Replica::hello().as_bytes()).unwrap();
+    let (_, welcome) = &step.send[0];
+    let rep = Replica::join(welcome.as_bytes()).unwrap();
+    let (_, resumed) = room.connect(rep.hello_again().as_bytes()).unwrap();
+    assert!(resumed.log.is_none(), "resuming a known id logs nothing");
 }

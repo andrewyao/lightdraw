@@ -241,9 +241,6 @@ struct Room {
     store: Store,
     every: usize,
     since_snapshot: usize,
-    /// `connect` advanced `next_client` without a log record. Only a
-    /// snapshot saves it, and a reissued id would merge two clients.
-    ids_unsaved: bool,
     clients: HashMap<ClientId, Socket>,
     conns: HashMap<ConnId, ClientId>,
 }
@@ -302,7 +299,6 @@ impl Room {
             store,
             every: config.snapshot_every.max(1),
             since_snapshot: saved.log.len(),
-            ids_unsaved: false,
             clients: HashMap::new(),
             conns: HashMap::new(),
         })
@@ -328,7 +324,6 @@ impl Room {
                         let _ = old.out.send(Out::Close);
                     }
                     self.conns.insert(conn, client);
-                    self.ids_unsaved = true;
                     let _ = reply.send(Ok(()));
                     info!(
                         room = self.name.as_str(),
@@ -410,13 +405,12 @@ impl Room {
     /// A failed snapshot is logged and retried later. The log still holds
     /// every record, so nothing is lost.
     fn checkpoint(&mut self) {
-        if self.since_snapshot == 0 && !self.ids_unsaved {
+        if self.since_snapshot == 0 {
             return;
         }
         match self.store.checkpoint(&self.auth.snapshot()) {
             Ok(()) => {
                 self.since_snapshot = 0;
-                self.ids_unsaved = false;
             }
             Err(why) => error!(room = self.name.as_str(), %why, "snapshot failed"),
         }

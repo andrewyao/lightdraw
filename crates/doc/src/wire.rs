@@ -92,14 +92,19 @@ pub(crate) enum ServerMsg {
     },
 }
 
-/// One committed batch on disk. Replaying records in order rebuilds the
-/// document, `seq`, and the per-client dedupe table.
+/// One record on disk. Replaying records in order rebuilds the document,
+/// `seq`, the per-client dedupe table, and the next fresh client id.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct LogEntry {
-    pub seq: Seq,
-    pub origin: ClientId,
-    pub batch: BatchNo,
-    pub changes: Vec<Change>,
+pub(crate) enum LogEntry {
+    Commit {
+        seq: Seq,
+        origin: ClientId,
+        batch: BatchNo,
+        changes: Vec<Change>,
+    },
+    /// A fresh id was handed out. Ids are never reused, so it must be on
+    /// disk before the `Welcome` that carries it.
+    Grant { client: ClientId },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

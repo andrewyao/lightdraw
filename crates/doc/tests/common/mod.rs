@@ -39,6 +39,8 @@ impl Net {
         for _ in 0..n {
             let (id, step) = net.auth.connect(Replica::hello().as_bytes()).unwrap();
             let welcome = only_to(&step, id);
+            net.log
+                .extend(step.log.iter().map(|r| r.as_bytes().to_vec()));
             net.peers.push(Peer {
                 rep: Replica::join(&welcome).unwrap(),
                 online: true,
