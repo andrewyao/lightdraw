@@ -14,7 +14,7 @@ wgpu = { version = "30", features = ["webgl"] }
 glyphon = "0.12"
 glam = "0.34"
 rstar = "0.12"
-bytemuck = "1"
+bytemuck = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

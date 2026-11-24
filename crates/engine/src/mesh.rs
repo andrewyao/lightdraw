@@ -1,11 +1,16 @@
 //! One unit mesh per profile. The outline fills [0, 1]^2 in (u, v) and is
 //! extruded over w in [0, 1]. Instances scale it to their box and turn it to
 //! their axis in the vertex shader.
+//!
+//! Each vertex also carries four edge coordinates. The face shader glows
+//! where any of them reaches zero, so only true edges light up: a cap's rim,
+//! not its fan spokes, and a cylinder's rims, not the seams between its side
+//! quads. A coordinate held at 1 across a triangle marks no edge.
 
 use doc::Profile;
 
-/// Position then normal, both in (u, v, w).
-pub type Vertex = [f32; 6];
+/// Position, normal (both in (u, v, w)), then edge coordinates.
+pub type Vertex = [f32; 10];
 
 #[derive(Debug)]
 pub struct MeshData {
@@ -63,10 +68,10 @@ pub fn build(p: Profile) -> MeshData {
 
     for (w, nw) in [(0.0, -1.0), (1.0, 1.0)] {
         let base = vertices.len() as u16;
-        vertices.push([0.5, 0.5, w, 0.0, 0.0, nw]);
+        vertices.push([0.5, 0.5, w, 0.0, 0.0, nw, 1.0, 1.0, 1.0, 1.0]);
         for q in &ring {
             let [u, v] = unit(*q);
-            vertices.push([u, v, w, 0.0, 0.0, nw]);
+            vertices.push([u, v, w, 0.0, 0.0, nw, 0.0, 1.0, 1.0, 1.0]);
         }
         for i in 0..n as u16 {
             let (a, b) = (base + 1 + i, base + 1 + (i + 1) % n as u16);
@@ -87,10 +92,17 @@ pub fn build(p: Profile) -> MeshData {
         };
         let normal = |q: [f32; 2]| if smooth { q } else { flat };
         let base = vertices.len() as u16;
-        for (q, w) in [(p0, 0.0), (p1, 0.0), (p1, 1.0), (p0, 1.0)] {
+        for (q, s, w) in [
+            (p0, 0.0, 0.0),
+            (p1, 1.0, 0.0),
+            (p1, 1.0, 1.0),
+            (p0, 0.0, 1.0),
+        ] {
             let [u, v] = unit(q);
             let [nu, nv] = normal(q);
-            vertices.push([u, v, w, nu, nv, 0.0]);
+            // Seams between a smooth profile's side quads are not edges.
+            let (s0, s1) = if smooth { (1.0, 1.0) } else { (s, 1.0 - s) };
+            vertices.push([u, v, w, nu, nv, 0.0, s0, s1, w, 1.0 - w]);
         }
         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
@@ -110,9 +122,32 @@ mod tests {
             for t in m.indices.chunks(3) {
                 let v = |i: u16| glam::Vec3::from_slice(&m.vertices[i as usize][..3]);
                 let face = (v(t[1]) - v(t[0])).cross(v(t[2]) - v(t[0]));
-                let n = glam::Vec3::from_slice(&m.vertices[t[0] as usize][3..]);
+                let n = glam::Vec3::from_slice(&m.vertices[t[0] as usize][3..6]);
                 assert!(face.dot(n) > 0.0, "{p:?} triangle {t:?}");
             }
+        }
+    }
+
+    /// Outline corners sit on an edge and fan centres never do. Prisms get
+    /// vertical creases; the cylinder's side seams stay dark.
+    #[test]
+    fn edge_coordinates_vanish_on_true_edges_only() {
+        for p in PROFILES {
+            let m = build(p);
+            let on_edge = |v: &&Vertex| v[6..].contains(&0.0);
+            let is_cap = |v: &&Vertex| v[5] != 0.0;
+            let is_centre = |v: &&Vertex| is_cap(v) && v[0] == 0.5 && v[1] == 0.5;
+            let centres: Vec<_> = m.vertices.iter().filter(is_centre).collect();
+            assert_eq!(centres.len(), 2, "{p:?}");
+            assert!(!centres.iter().any(on_edge), "{p:?} fan centre");
+            let ring = m.vertices.iter().filter(|v| is_cap(v) && !is_centre(v));
+            assert!(ring.clone().all(|v| on_edge(&v)), "{p:?} cap rim");
+            let creases = m
+                .vertices
+                .iter()
+                .filter(|v| !is_cap(v) && (v[6] == 0.0 || v[7] == 0.0))
+                .count();
+            assert_eq!(creases > 0, p != Profile::Ellipse, "{p:?} creases");
         }
     }
 }

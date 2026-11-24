@@ -131,6 +131,15 @@ impl Scene {
         self.by_id.is_empty()
     }
 
+    /// The box around every entry. O(1).
+    pub fn bounds(&self) -> Option<(DVec3, DVec3)> {
+        if self.is_empty() {
+            return None;
+        }
+        let e = self.tree.root().envelope();
+        Some((DVec3::from(e.lower()), DVec3::from(e.upper())))
+    }
+
     pub fn get(&self, id: &OccId) -> Option<&Entry> {
         self.entry(*self.by_id.get(id)?)
     }

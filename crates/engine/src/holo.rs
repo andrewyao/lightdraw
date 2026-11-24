@@ -1,9 +1,13 @@
 //! The hologram look's tunables. One value drives every frame, so a look-lab
 //! slider can change any of them live without touching the scene.
 
+use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// `repr(C)` and all `f32`: the GPU reads it byte for byte as `Holo` in
+/// common.wgsl, so the field order there must match.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Pod, Zeroable, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HoloParams {
     /// Base hue of the family, in turns: 0.5 is cyan.
@@ -42,21 +46,21 @@ impl Default for HoloParams {
     fn default() -> HoloParams {
         HoloParams {
             hue: 0.52,
-            saturation: 0.8,
-            face_alpha: 0.12,
+            saturation: 0.85,
+            face_alpha: 0.32,
             rim_power: 2.5,
-            rim_intensity: 0.9,
+            rim_intensity: 1.5,
             edge_width: 1.1,
-            edge_intensity: 2.2,
+            edge_intensity: 1.6,
             bloom_threshold: 0.6,
             bloom_intensity: 0.9,
-            bloom_radius: 0.75,
+            bloom_radius: 0.65,
             scanline_density: 220.0,
             scanline_speed: 18.0,
             scanline_strength: 0.18,
             flicker: 0.04,
             chroma_aberration: 3.0,
-            grid_intensity: 0.5,
+            grid_intensity: 0.35,
             disc_intensity: 1.0,
             cone_intensity: 0.35,
             noise: 0.035,
@@ -121,7 +125,7 @@ impl HoloParams {
                 HoloParams {
                     hue: 0.83,
                     saturation: 1.0,
-                    face_alpha: 0.2,
+                    face_alpha: 0.32,
                     rim_power: 1.8,
                     rim_intensity: 1.6,
                     edge_width: 1.4,

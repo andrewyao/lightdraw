@@ -1,32 +1,24 @@
-// Scene pass: solids, lines, and the ground grid, into the HDR target.
-// Every position here is relative to the eye. See camera.rs.
-
-struct Globals {
-    view_proj: mat4x4<f32>,
-    // xyz: unit vector toward the light. w: ambient.
-    light: vec4<f32>,
-    // xyz: grid centre relative to the eye, on a multiple of 10 cells.
-    // w: half the grid's width.
-    grid: vec4<f32>,
-};
-
-@group(0) @binding(0) var<uniform> g: Globals;
+// Scene pass: everything adds light into the HDR target, so nothing needs
+// sorting. Every position here is relative to the eye. See camera.rs.
 
 struct SolidIn {
     @location(0) pos: vec3<f32>,
     @location(1) nrm: vec3<f32>,
     // xyz: eye-relative box min. w: axis (0 X, 1 Y, 2 Z).
     @location(2) at: vec4<f32>,
-    // xyz: box size. w: 1 for unlit.
+    // xyz: box size.
     @location(3) size: vec4<f32>,
     @location(4) color: vec4<f32>,
+    // Zero on an edge. See mesh.rs.
+    @location(5) edge: vec4<f32>,
 };
 
 struct SolidOut {
     @builtin(position) clip: vec4<f32>,
-    @location(0) nrm: vec3<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) unlit: f32,
+    @location(0) rel: vec3<f32>,
+    @location(1) nrm: vec3<f32>,
+    @location(2) edge: vec4<f32>,
+    @location(3) @interpolate(flat) tint: vec3<f32>,
 };
 
 // Mesh (u, v, w) to world axes. Must match pick::frame_axes.
@@ -45,42 +37,75 @@ fn vs_solid(i: SolidIn) -> SolidOut {
     var o: SolidOut;
     let rel = i.at.xyz + place(i.pos, i.at.w) * i.size.xyz;
     o.clip = g.view_proj * vec4<f32>(rel, 1.0);
+    o.rel = rel;
     // Inverse-transpose of a scale. A flat tile's zero extent makes its cap
     // normal dominate, which is the right answer.
     o.nrm = place(i.nrm, i.at.w) / max(i.size.xyz, vec3<f32>(1e-4));
-    o.color = i.color;
-    o.unlit = i.size.w;
+    o.edge = i.edge;
+    o.tint = family(i.color.rgb);
     return o;
 }
 
-@fragment
-fn fs_solid(i: SolidOut) -> @location(0) vec4<f32> {
-    if i.unlit > 0.5 {
-        return vec4<f32>(i.color.rgb, 1.0);
-    }
-    let n = normalize(i.nrm);
-    let diffuse = max(dot(n, g.light.xyz), 0.0);
-    let sky = 0.5 + 0.5 * n.z;
-    let shade = g.light.w * (0.6 + 0.4 * sky) + 0.8 * diffuse;
-    return vec4<f32>(i.color.rgb * shade, 1.0);
+// Distance in pixels to the nearest edge of this face.
+fn edge_px(e: vec4<f32>) -> f32 {
+    let d = e / max(fwidth(e), vec4<f32>(1e-6));
+    return min(min(d.x, d.y), min(d.z, d.w));
 }
 
-struct GridOut {
+// Light projected into the volume is strongest near the projector and
+// thins toward the top.
+fn height_falloff(rel_z: f32) -> f32 {
+    let h = (rel_z + g.eye.x - g.stage2.y) / max(g.stage2.x, 1.0);
+    return mix(1.0, 0.55, clamp(h, 0.0, 1.0));
+}
+
+// Fine horizontal bands drifting up through the volume.
+fn interference(rel_z: f32) -> f32 {
+    let z = rel_z + g.eye.x;
+    let s = 0.5 + 0.5 * sin((z * 9.0 - g.holo.time * 1.5) * 6.2831853);
+    return 1.0 - 0.6 * g.holo.scanline_strength * s;
+}
+
+@fragment
+fn fs_face(i: SolidOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let h = g.holo;
+    let v = normalize(-i.rel);
+    let n = normalize(i.nrm) * select(-1.0, 1.0, front);
+    let facing = clamp(dot(n, v), 0.0, 1.0);
+    let rim = pow(1.0 - facing, h.rim_power) * h.rim_intensity;
+    let px = edge_px(i.edge);
+    let w = max(h.edge_width, 0.01);
+    let line = 1.0 - smoothstep(w, w + 1.0, px);
+    let halo = exp(-px / (w * 3.0)) * 0.25;
+    // Far side of the volume, seen through the near side.
+    let depth = select(0.45, 1.0, front);
+    let body = (h.face_alpha + rim) * interference(i.rel.z);
+    let hot = mix(i.tint, vec3<f32>(1.0), 0.15) * (line + halo) * h.edge_intensity;
+    let c = (i.tint * body + hot) * depth * height_falloff(i.rel.z);
+    return vec4<f32>(c, 1.0);
+}
+
+// Connectors and outlines: thin boxes that are all edge.
+@fragment
+fn fs_line(i: SolidOut) -> @location(0) vec4<f32> {
+    let c = mix(i.tint, vec3<f32>(1.0), 0.15) * g.holo.edge_intensity * 0.7;
+    return vec4<f32>(c, 1.0);
+}
+
+struct FloorOut {
     @builtin(position) clip: vec4<f32>,
     // Offset from the grid centre, which sits on a lattice point.
     @location(0) local: vec2<f32>,
 };
 
 @vertex
-fn vs_grid(@builtin(vertex_index) vi: u32) -> GridOut {
+fn vs_floor(@builtin(vertex_index) vi: u32) -> FloorOut {
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
     );
     let local = corners[vi] * g.grid.w;
-    var o: GridOut;
-    // A hair below z = 0, so flat tiles on the ground hide the lines under
-    // them instead of fighting them for depth.
+    var o: FloorOut;
     o.clip = g.view_proj * vec4<f32>(g.grid.xyz + vec3<f32>(local, -0.01), 1.0);
     o.local = local;
     return o;
@@ -92,13 +117,89 @@ fn grid_line(coord: vec2<f32>) -> f32 {
     return 1.0 - min(min(d.x, d.y), 1.0);
 }
 
+// A thin ring at radius r, antialiased in pixels.
+fn ring(r: f32, at: f32, width_px: f32) -> f32 {
+    return 1.0 - smoothstep(0.0, width_px, abs(r - at) / max(fwidth(r), 1e-6));
+}
+
 @fragment
-fn fs_grid(i: GridOut) -> @location(0) vec4<f32> {
-    // Minor lines fade out where they get denser than a few pixels apart.
+fn fs_floor(i: FloorOut) -> @location(0) vec4<f32> {
+    let h = g.holo;
+    let tint = hsv2rgb(vec3<f32>(h.hue, h.saturation, 1.0));
+    let to_stage = g.grid.xy + i.local - g.stage.xy;
+    let radius = g.stage.w;
+    let r = length(to_stage) / radius;
+
+    // The lattice is light the projector throws on the ground: brightest
+    // round the disc, gone a few radii out, and thinning toward the horizon.
     let density = max(fwidth(i.local).x, fwidth(i.local).y);
     let minor = grid_line(i.local) * (1.0 - smoothstep(0.1, 0.35, density));
     let major = grid_line(i.local / 10.0);
-    let fade = 1.0 - smoothstep(0.4 * g.grid.w, g.grid.w, length(i.local));
-    let a = max(minor * 0.35, major * 0.8) * fade;
-    return vec4<f32>(vec3<f32>(0.1, 0.45, 0.6) * a, a);
+    let horizon = 1.0 - smoothstep(0.3 * g.grid.w, g.grid.w, length(i.local));
+    let spill = exp(-max(r - 1.0, 0.0) * 2.2);
+    let lattice = max(minor * 0.2, major * 0.55) * horizon * (0.03 + 0.97 * spill);
+
+    // The projector disc: a hot rim, a dashed outer ring turning slowly,
+    // faint rings inside, and a glow pooled at its centre.
+    let angle = atan2(to_stage.y, to_stage.x) / 6.2831853;
+    let dashes = step(0.5, fract(angle * 48.0 + h.time * 0.25));
+    let inner = smoothstep(1.0, 0.0, r);
+    let rings = 0.5 + 0.5 * cos(r * 6.2831853 * 6.0);
+    var disc = ring(r, 1.0, 1.6) * 1.8
+        + ring(r, 1.08, 1.0) * dashes * 1.2
+        + ring(r, 0.72, 1.0) * 0.5
+        + inner * (0.05 + 0.08 * rings)
+        + exp(-r * r * 9.0) * 0.5;
+    disc *= step(r, 1.2);
+
+    let c = tint * (lattice * h.grid_intensity + disc * h.disc_intensity);
+    return vec4<f32>(c, 1.0);
+}
+
+const CONE_SEGMENTS: u32 = 64u;
+
+struct ConeOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) rel: vec3<f32>,
+    @location(1) nrm: vec3<f32>,
+    // 0 at the disc, 1 at the top.
+    @location(2) up: f32,
+    @location(3) around: f32,
+};
+
+// The light rising off the disc: an open, slightly widening tube drawn
+// from both sides.
+@vertex
+fn vs_cone(@builtin(vertex_index) vi: u32) -> ConeOut {
+    var quad = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 1.0),
+    );
+    let q = quad[vi % 6u];
+    let around = (f32(vi / 6u) + q.x) / f32(CONE_SEGMENTS);
+    let a = around * 6.2831853;
+    let dir = vec2<f32>(cos(a), sin(a));
+    let radius = g.stage.w * (1.0 + 0.12 * q.y);
+    let rel = g.stage.xyz + vec3<f32>(dir * radius, q.y * g.stage2.x);
+    var o: ConeOut;
+    o.clip = g.view_proj * vec4<f32>(rel, 1.0);
+    o.rel = rel;
+    o.nrm = vec3<f32>(dir, -0.12);
+    o.up = q.y;
+    o.around = around;
+    return o;
+}
+
+@fragment
+fn fs_cone(i: ConeOut) -> @location(0) vec4<f32> {
+    let h = g.holo;
+    let tint = hsv2rgb(vec3<f32>(h.hue, h.saturation, 1.0));
+    // Light seen through more of the volume where the view meets the tube
+    // head-on, and soft where it grazes.
+    let thickness = abs(dot(normalize(i.nrm), normalize(-i.rel)));
+    let fade = pow(1.0 - i.up, 2.2);
+    let streaks = 0.85 + 0.15 * sin(i.around * 6.2831853 * 23.0)
+        * sin(i.around * 6.2831853 * 7.0 + 1.3);
+    let c = tint * thickness * fade * streaks * h.cone_intensity * 0.8;
+    return vec4<f32>(c, 1.0);
 }

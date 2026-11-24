@@ -11,14 +11,12 @@ use crate::mesh;
 use crate::scene::{LINE_RADIUS, Look, Scene};
 
 /// One instance as the vertex shader reads it: eye-relative box min, axis,
-/// box size, unlit flag, linear RGBA.
+/// box size, padding, linear RGBA.
 pub type Instance = [f32; 12];
 
 const AXIS_X: f32 = 0.0;
 const AXIS_Y: f32 = 1.0;
 const AXIS_Z: f32 = 2.0;
-const LIT: f32 = 0.0;
-const UNLIT: f32 = 1.0;
 
 /// Everything one frame draws. Reused across frames to keep allocations.
 #[derive(Debug, Default)]
@@ -26,9 +24,12 @@ pub struct DrawList {
     /// Faces, one array per profile in `mesh::PROFILES` order.
     pub solids: [Vec<Instance>; 4],
     /// Outlines of groups and text, and connector segments. Drawn as thin
-    /// unlit boxes with the rect mesh, in their own pass so the hologram
+    /// emissive boxes with the rect mesh, in their own pass so the hologram
     /// look can draw edges differently.
     pub lines: Vec<Instance>,
+    /// World bounds of the whole page, not just what is visible, so the
+    /// projector stays put as the camera moves.
+    pub bounds: Option<(DVec3, DVec3)>,
 }
 
 impl DrawList {
@@ -46,6 +47,7 @@ impl DrawList {
             s.clear();
         }
         self.lines.clear();
+        self.bounds = scene.bounds();
         let eye = camera.eye();
         let frustum = camera.frustum(size);
         for e in scene.visible(&frustum) {
@@ -60,7 +62,6 @@ impl DrawList {
                         e.min - eye,
                         axis,
                         e.max - e.min,
-                        LIT,
                         e.color,
                     ));
                 }
@@ -75,18 +76,18 @@ impl DrawList {
     }
 }
 
-fn instance(rel_min: DVec3, axis: f32, size: DVec3, flags: f32, c: [f32; 4]) -> Instance {
+fn instance(rel_min: DVec3, axis: f32, size: DVec3, c: [f32; 4]) -> Instance {
     let m = rel_min.as_vec3();
     let s = size.as_vec3();
     [
-        m.x, m.y, m.z, axis, s.x, s.y, s.z, flags, c[0], c[1], c[2], c[3],
+        m.x, m.y, m.z, axis, s.x, s.y, s.z, 0.0, c[0], c[1], c[2], c[3],
     ]
 }
 
 fn segment(out: &mut Vec<Instance>, a: DVec3, b: DVec3, eye: DVec3, color: [f32; 4]) {
     let r = DVec3::splat(LINE_RADIUS);
     let (lo, hi) = (a.min(b) - r, a.max(b) + r);
-    out.push(instance(lo - eye, AXIS_Z, hi - lo, UNLIT, color));
+    out.push(instance(lo - eye, AXIS_Z, hi - lo, color));
 }
 
 /// The twelve edges of a box.
