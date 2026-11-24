@@ -59,7 +59,10 @@ fn occurrences(sh: &Shared) -> JsValue {
     };
     for occ in ed.doc().occurrences(page) {
         let id = JsValue::from_str(&format!("{:?}", occ.id.node));
-        let kind = JsValue::from_str(&format!("{:?}", ed.doc().kind(occ.id.node)));
+        let kind = ed
+            .doc()
+            .kind(occ.id.node)
+            .map_or(JsValue::NULL, |k| JsValue::from_str(&format!("{k:?}")));
         let text = |l: Option<doc::Label>| l.map_or(JsValue::NULL, |l| JsValue::from_str(l.text));
         let v = match &occ.item {
             Item::Group(s) | Item::Text(s) | Item::Shape { solid: s, .. } => obj(&[

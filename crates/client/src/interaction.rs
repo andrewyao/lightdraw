@@ -41,8 +41,8 @@ pub struct Pointer {
     pub px: [f64; 2],
     pub ray: Ray,
     pub hit: Option<Hit>,
-    /// The gizmo arrow under the pointer, when something is selected.
-    pub gizmo: Option<Axis>,
+    /// The gizmo arrow under the pointer, with the gizmo's origin.
+    pub gizmo: Option<(Axis, DVec3)>,
     /// The connector under the pointer. `pick` skips connectors.
     pub link: Option<NodeId>,
     pub mods: Mods,
@@ -465,8 +465,9 @@ fn press(
             }
         }
         Tool::Select => {
-            if let Some(axis) = p.gizmo.filter(|_| !selection.is_empty()) {
-                let at = p.hit.as_ref().map_or_else(|| p.ray.at(10.0), |h| h.point);
+            if let Some((axis, origin)) = p.gizmo.filter(|_| !selection.is_empty()) {
+                let dir = axis_dir(axis);
+                let at = origin + dir * along(&p.ray, origin, dir).unwrap_or(0.0);
                 return Mode::GizmoDrag {
                     axis,
                     grab: grab(cx.doc, selection, at),
@@ -1076,7 +1077,7 @@ mod tests {
         let block = boxed(&mut b, [0, 0, 0], [2, 2, 2]);
         let at = |x: f64, y: f64| {
             let mut p = above(x, y);
-            p.gizmo = Some(Axis::Y);
+            p.gizmo = Some((Axis::Y, DVec3::new(1.0, 1.0, 1.0)));
             p
         };
         let state = State {
@@ -1096,6 +1097,46 @@ mod tests {
         assert_eq!(moved.len(), 1);
         assert!(moved[0].contains(&Change::set(block, Attr::X(Cell(0)))));
         assert!(moved[0].contains(&Change::set(block, Attr::Y(Cell(3)))));
+    }
+
+    #[test]
+    fn a_gizmo_drag_under_perspective_follows_the_pointer_at_gizmo_depth() {
+        let mut b = Builder::new();
+        let block = boxed(&mut b, [0, 0, 0], [2, 2, 2]);
+        let cam = engine::Camera::default();
+        let size = [1000, 800];
+        let origin = DVec3::new(1.0, 1.0, 1.0);
+        let at = |w: DVec3| {
+            let px = cam.project(w, size).expect("in view");
+            Pointer {
+                px,
+                ray: cam.ray(px, size),
+                gizmo: Some((Axis::X, origin)),
+                ..above(0.0, 0.0)
+            }
+        };
+        let state = State {
+            selection: vec![block],
+            ..State::default()
+        };
+        let (_, cmds) = run(
+            &b,
+            Tool::Select,
+            state,
+            vec![
+                Event::Down(Button::Primary, at(origin + DVec3::X * 2.0)),
+                Event::Move(at(origin + DVec3::X * 7.0)),
+            ],
+        );
+        assert_eq!(
+            sets(&cmds),
+            vec![vec![
+                Change::set(block, Attr::X(Cell(5))),
+                Change::set(block, Attr::Y(Cell(0))),
+                Change::set(block, Attr::Z(Cell(0))),
+            ]],
+            "five cells of pointer travel along the arrow move five cells"
+        );
     }
 
     #[test]

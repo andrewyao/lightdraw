@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use client::components;
-use client::interaction::{Button, Event, Key, Tool};
+use client::interaction::{Button, Event, Key, Mode, Tool};
 use client::look::{self, FIELDS};
 use doc::Profile;
 use engine::{HoloParams, View};
@@ -155,8 +155,11 @@ pub fn App() -> impl IntoView {
         let gpu_sh = sh.clone();
         spawn_local(async move {
             match engine::Gpu::from_canvas(el).await {
-                Ok(gpu) => gpu_sh.borrow_mut().gpu = Some(gpu),
-                Err(e) => ui.status.set(format!("GPU unavailable: {e}")),
+                Ok(gpu) => {
+                    gpu_sh.borrow_mut().gpu = Some(gpu);
+                    ui.gpu.set("GPU ready".into());
+                }
+                Err(e) => ui.gpu.set(format!("GPU unavailable: {e}")),
             }
         });
         editor::connect(&sh);
@@ -212,6 +215,13 @@ pub fn App() -> impl IntoView {
                         ed.dispatch(Event::Up(p));
                     });
                 }
+                on:pointercancel=move |_| {
+                    act(sv, |ed| {
+                        if !matches!(ed.state.mode, Mode::Idle | Mode::EditingText { .. }) {
+                            ed.dispatch(Event::Key(Key::Escape));
+                        }
+                    });
+                }
                 on:dblclick=move |e: web_sys::MouseEvent| {
                     act(sv, |ed| {
                         let p = ed.pointer(client(&e), e.shift_key());
@@ -244,6 +254,8 @@ pub fn App() -> impl IntoView {
                     <b>{format!("#{room}")}</b>
                     " "
                     <span data-testid="status">{move || ui.status.get()}</span>
+                    " · "
+                    <span data-testid="gpu-status">{move || ui.gpu.get()}</span>
                 </div>
                 <ul class="peers">
                     {move || {

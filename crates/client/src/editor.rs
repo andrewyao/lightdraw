@@ -48,6 +48,8 @@ pub struct TextBox {
 #[derive(Copy, Clone, Debug)]
 pub struct Ui {
     pub status: RwSignal<String>,
+    /// GPU init state, kept apart so connection updates never hide it.
+    pub gpu: RwSignal<String>,
     pub peers: RwSignal<Vec<Peer>>,
     /// Bumped on every document change.
     pub rev: RwSignal<u64>,
@@ -64,6 +66,7 @@ impl Ui {
     pub fn new(holo: HoloParams) -> Ui {
         Ui {
             status: RwSignal::new("connecting".into()),
+            gpu: RwSignal::new("starting GPU".into()),
             peers: RwSignal::new(Vec::new()),
             rev: RwSignal::new(0),
             tool: RwSignal::new(Tool::Select),

@@ -89,7 +89,7 @@ pub fn gizmo_at(
     size: [u32; 2],
     px: [f64; 2],
     tol: f64,
-) -> Option<Axis> {
+) -> Option<(Axis, DVec3)> {
     let (c, len) = gizmo(doc, selection)?;
     let a = cam.project(c, size)?;
     [Axis::X, Axis::Y, Axis::Z]
@@ -100,7 +100,7 @@ pub fn gizmo_at(
         })
         .filter(|(d, _)| *d <= tol)
         .min_by(|x, y| x.0.total_cmp(&y.0))
-        .map(|(_, ax)| ax)
+        .map(|(_, ax)| (ax, c))
 }
 
 /// The connector whose path passes within `tol` device pixels of `px`.
@@ -455,7 +455,10 @@ mod tests {
             let near_tip = cam
                 .project(c + axis_dir(ax) * len * 0.9, size)
                 .expect("visible");
-            assert_eq!(gizmo_at(b.doc(), &[n], &cam, size, near_tip, 4.0), Some(ax));
+            assert_eq!(
+                gizmo_at(b.doc(), &[n], &cam, size, near_tip, 4.0),
+                Some((ax, c))
+            );
         }
         assert_eq!(gizmo_at(b.doc(), &[n], &cam, size, [0.0, 0.0], 4.0), None);
     }
