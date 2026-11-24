@@ -79,13 +79,17 @@ fn fs_face(i: SolidOut, @builtin(front_facing) front: bool) -> @location(0) vec4
     let halo = exp(-px / (w * 3.0)) * 0.25;
     // Far side of the volume, seen through the near side.
     let depth = select(0.45, 1.0, front);
-    let body = (h.face_alpha + rim) * interference(i.rel.z);
+    // Each pane brightens toward its border, in face space, so flat faces
+    // read as lit glass rather than flat fill.
+    let inner = 1.0 - smoothstep(0.0, 0.5, min(min(i.edge.x, i.edge.y), min(i.edge.z, i.edge.w)));
+    let body = (h.face_alpha * (0.6 + 1.4 * inner * inner) + rim) * interference(i.rel.z);
     // Faces only a few pixels across would be all edge; fade their lines so
     // a dense, distant crowd reads as volume rather than a white sheet.
     let fw = fwidth(i.edge);
     let span = 1.0 / max(max(max(fw.x, fw.y), max(fw.z, fw.w)), 1e-6);
     let detail = smoothstep(4.0, 24.0, span);
-    let hot = mix(i.tint, vec3<f32>(1.0), 0.15) * (line + halo) * detail * h.edge_intensity;
+    let far_edges = select(0.4, 1.0, front);
+    let hot = mix(i.tint, vec3<f32>(1.0), 0.06) * (line + halo) * detail * far_edges * h.edge_intensity;
     let c = (i.tint * body + hot) * depth * height_falloff(i.rel.z);
     return vec4<f32>(c, 1.0);
 }
@@ -93,7 +97,7 @@ fn fs_face(i: SolidOut, @builtin(front_facing) front: bool) -> @location(0) vec4
 // Connectors and outlines: thin boxes that are all edge.
 @fragment
 fn fs_line(i: SolidOut) -> @location(0) vec4<f32> {
-    let c = mix(i.tint, vec3<f32>(1.0), 0.15) * g.holo.edge_intensity * 0.7;
+    let c = mix(i.tint, vec3<f32>(1.0), 0.06) * g.holo.edge_intensity * 0.45;
     return vec4<f32>(c, 1.0);
 }
 

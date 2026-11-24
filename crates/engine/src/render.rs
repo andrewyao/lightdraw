@@ -573,7 +573,7 @@ fn globals(frame: Frame<'_>, size: [u32; 2]) -> Vec<u8> {
             let height = hi.z.max(1.0) * 1.3 + 1.0;
             (DVec3::new(mid.x, mid.y, 0.0), radius, height)
         }
-        None => (centre, 6.0, 0.0),
+        None => (DVec3::new(camera.target.x, camera.target.y, 0.0), 6.0, 0.0),
     };
 
     let mut out = Vec::with_capacity(GLOBALS_BYTES);

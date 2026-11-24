@@ -140,7 +140,7 @@ fn a_face_seen_through_another_is_brighter() {
     );
     let both = Shot::take(&b, camera, &still()).luma(centre);
     assert!(
-        both > alone + 8.0,
+        both > alone + 25.0,
         "overlap adds light: {alone} then {both}"
     );
 }
@@ -161,7 +161,7 @@ fn a_cylinder_glows_at_its_rim_more_than_at_its_centre() {
     // The camera looks along +X, so the silhouette is at +-Y.
     let centre = shot.luma(mid);
     let rim = shot.luma(mid + DVec3::new(0.0, 2.85, 0.0));
-    assert!(rim > centre + 15.0, "rim {rim}, centre {centre}");
+    assert!(rim > centre + 30.0, "rim {rim}, centre {centre}");
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn bloom_lights_the_dark_beside_a_bright_edge() {
     let on = Shot::take(&b, camera, &still());
     let (off, on) = (off.luma(beside), on.luma(beside));
     assert!(
-        on > off + 6.0,
+        on > off + 20.0,
         "bloom spills past the edge: {off} then {on}"
     );
 }
@@ -205,4 +205,15 @@ fn time_alone_animates_the_frame() {
     let first = at(1.25);
     assert!(first == at(1.25), "a fixed time renders the same frame");
     assert!(first != at(1.5), "scanlines and flicker move with time");
+}
+
+#[test]
+fn an_empty_page_lights_the_ground_under_the_view() {
+    let mut b = Builder::new();
+    b.page();
+    let camera = demo::showcase_camera();
+    let shot = Shot::take(&b, camera, &still());
+    let ground = DVec3::new(camera.target.x, camera.target.y, 0.0);
+    let lit = shot.luma(ground);
+    assert!(lit > 25.0, "the projector sits under the view: {lit}");
 }
