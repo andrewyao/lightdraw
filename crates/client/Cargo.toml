@@ -7,14 +7,39 @@ license.workspace = true
 publish = false
 
 [dependencies]
-doc = { path = "../doc" }
+doc = { path = "../doc", features = ["ron"] }
 engine = { path = "../engine" }
+glam = "0.34"
 leptos = { version = "0.8", features = ["csr"] }
+ron = "0.12"
 wgpu = "30"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
-web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "BinaryType",
+    "Clipboard",
+    "DataTransfer",
+    "Document",
+    "DragEvent",
+    "Element",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlTextAreaElement",
+    "KeyboardEvent",
+    "Location",
+    "MessageEvent",
+    "MouseEvent",
+    "Navigator",
+    "Performance",
+    "PointerEvent",
+    "Storage",
+    "WebSocket",
+    "WheelEvent",
+    "Window",
+] }
 
 [lints]
 workspace = true

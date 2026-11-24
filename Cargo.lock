@@ -473,7 +473,11 @@ dependencies = [
  "console_error_panic_hook",
  "doc",
  "engine",
+ "glam",
+ "js-sys",
  "leptos",
+ "ron",
+ "wasm-bindgen",
  "web-sys",
  "wgpu",
 ]
