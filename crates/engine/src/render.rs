@@ -13,6 +13,7 @@ use wgpu::util::DeviceExt;
 
 use crate::camera::Camera;
 use crate::encode::{DrawList, Instance};
+use crate::holo::HoloParams;
 use crate::mesh;
 
 pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -47,6 +48,14 @@ struct Targets {
 pub struct Output<'a> {
     pub view: &'a wgpu::TextureView,
     pub size: [u32; 2],
+}
+
+/// What one frame draws: the encoded scene, the view, and the look.
+#[derive(Copy, Clone, Debug)]
+pub struct Frame<'a> {
+    pub list: &'a DrawList,
+    pub camera: &'a Camera,
+    pub holo: &'a HoloParams,
 }
 
 #[derive(Debug)]
@@ -253,17 +262,17 @@ impl Renderer {
         }
     }
 
-    /// Draws `list` as seen by `camera` into `output`. Only records
-    /// commands; the caller submits.
+    /// Draws `frame` into `output`. Only records commands; the caller
+    /// submits.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         output: Output<'_>,
-        camera: &Camera,
-        list: &DrawList,
+        frame: Frame<'_>,
     ) {
+        let Frame { list, camera, .. } = frame;
         let size = [output.size[0].max(1), output.size[1].max(1)];
         if self.targets.as_ref().is_none_or(|t| t.size != size) {
             self.targets = Some(self.make_targets(device, size));

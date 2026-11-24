@@ -5,6 +5,7 @@
 //! - `pick`    exact ray picking and work-plane snapping.
 //! - `encode`  cull and encode one frame on the CPU.
 //! - `render`  the GPU passes. Draws into any texture view.
+//! - `holo`    the hologram look's tunables.
 //! - `demo`    fixture documents, built through a `Replica`.
 
 use std::fmt;
@@ -12,6 +13,7 @@ use std::fmt;
 pub mod camera;
 pub mod demo;
 pub mod encode;
+mod holo;
 mod mesh;
 pub mod pick;
 mod render;
@@ -21,11 +23,14 @@ pub mod scene;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 #[cfg(not(target_arch = "wasm32"))]
-pub use headless::{Headless, Offscreen, RenderError, TARGET_FORMAT, render_to_png, write_png};
+pub use headless::{
+    Headless, Offscreen, RenderError, TARGET_FORMAT, render_rgba, render_to_png, write_png,
+};
 
 pub use camera::{Camera, View};
 pub use encode::DrawList;
-pub use render::{Output, Renderer};
+pub use holo::HoloParams;
+pub use render::{Frame, Output, Renderer};
 pub use scene::Scene;
 
 /// A configured device and surface, ready to draw a frame.
@@ -158,8 +163,8 @@ impl Gpu {
         self.queue.present(frame);
     }
 
-    /// Draws what `camera` sees of `scene` and presents it.
-    pub fn draw(&mut self, scene: &Scene, camera: &Camera) {
+    /// Draws what `camera` sees of `scene` in the `holo` look and presents it.
+    pub fn draw(&mut self, scene: &Scene, camera: &Camera, holo: &HoloParams) {
         let Some(frame) = self.acquire() else { return };
         let view = frame.texture.create_view(&Default::default());
         let size = [self.config.width, self.config.height];
@@ -177,8 +182,11 @@ impl Gpu {
             &self.queue,
             &mut encoder,
             Output { view: &view, size },
-            camera,
-            &self.list,
+            Frame {
+                list: &self.list,
+                camera,
+                holo,
+            },
         );
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);

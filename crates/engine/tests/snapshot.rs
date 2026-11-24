@@ -23,7 +23,14 @@ fn the_demo_snapshot_shows_its_shapes() {
     let (b, ids) = demo::showcase(&rack);
     let camera = demo::showcase_camera();
     let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("demo_test.png");
-    engine::render_to_png(b.doc(), &camera, SIZE, &path).unwrap();
+    engine::render_to_png(
+        b.doc(),
+        &camera,
+        SIZE,
+        &engine::HoloParams::default(),
+        &path,
+    )
+    .unwrap();
     let px = decode(&path);
 
     let luma: Vec<f64> = px

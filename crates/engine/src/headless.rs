@@ -9,7 +9,8 @@ use doc::{Doc, Kind, NodeId};
 use crate::InitError;
 use crate::camera::Camera;
 use crate::encode::DrawList;
-use crate::render::{Output, Renderer};
+use crate::holo::HoloParams;
+use crate::render::{Frame, Output, Renderer};
 use crate::scene::Scene;
 
 /// A renderer drawing into a texture it can read back.
@@ -40,7 +41,7 @@ impl Offscreen {
     }
 
     /// Records and submits one frame. Returns without waiting for the GPU.
-    pub fn draw(&mut self, list: &DrawList, camera: &Camera) {
+    pub fn draw(&mut self, list: &DrawList, camera: &Camera, holo: &HoloParams) {
         let mut encoder = self
             .gpu
             .device
@@ -56,8 +57,7 @@ impl Offscreen {
                 view: &self.view,
                 size,
             },
-            camera,
-            list,
+            Frame { list, camera, holo },
         );
         self.gpu.queue.submit([encoder.finish()]);
     }
@@ -88,13 +88,14 @@ impl fmt::Display for RenderError {
 
 impl std::error::Error for RenderError {}
 
-/// Renders the document's first page as `camera` sees it and writes a PNG.
-pub fn render_to_png(
+/// Renders the document's first page as `camera` sees it. Tightly packed
+/// RGBA8, top row first.
+pub fn render_rgba(
     doc: &Doc,
     camera: &Camera,
     size: [u32; 2],
-    path: &Path,
-) -> Result<(), RenderError> {
+    holo: &HoloParams,
+) -> Result<Vec<u8>, RenderError> {
     let page = doc
         .children(NodeId::ROOT)
         .find(|&p| doc.kind(p) == Some(Kind::Page))
@@ -103,9 +104,21 @@ pub fn render_to_png(
     let mut off = Offscreen::new(size).map_err(RenderError::Init)?;
     let mut list = DrawList::default();
     list.encode(&scene, camera, off.size());
-    off.draw(&list, camera);
-    let [w, h] = off.size();
-    write_png(path, w, h, &off.read()).map_err(RenderError::Io)
+    off.draw(&list, camera, holo);
+    Ok(off.read())
+}
+
+/// `render_rgba`, written to a PNG.
+pub fn render_to_png(
+    doc: &Doc,
+    camera: &Camera,
+    size: [u32; 2],
+    holo: &HoloParams,
+    path: &Path,
+) -> Result<(), RenderError> {
+    let rgba = render_rgba(doc, camera, size, holo)?;
+    let [w, h] = size.map(|v| v.max(1));
+    write_png(path, w, h, &rgba).map_err(RenderError::Io)
 }
 
 /// A device and queue with no window.

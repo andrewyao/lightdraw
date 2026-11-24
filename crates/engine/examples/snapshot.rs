@@ -14,7 +14,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?)?;
     let (b, _) = demo::showcase(&rack);
     let path = root.join("target/snapshots/demo.png");
-    engine::render_to_png(b.doc(), &demo::showcase_camera(), [1280, 800], &path)?;
+    engine::render_to_png(
+        b.doc(),
+        &demo::showcase_camera(),
+        [1280, 800],
+        &engine::HoloParams::default(),
+        &path,
+    )?;
     println!("{}", path.canonicalize()?.display());
     Ok(())
 }

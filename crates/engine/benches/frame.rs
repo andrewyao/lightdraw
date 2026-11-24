@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use criterion::{Criterion, criterion_group, criterion_main};
 use doc::{Axis, NodeId, Profile};
 use engine::demo::Builder;
-use engine::{Camera, DrawList, Offscreen, Scene};
+use engine::{Camera, DrawList, HoloParams, Offscreen, Scene};
 use glam::DVec3;
 
 const FRAMES: i32 = 10; // per side, so 100 frames
@@ -118,9 +118,10 @@ fn bench(c: &mut Criterion) {
     });
 
     let mut off = Offscreen::new(SIZE).expect("headless GPU");
+    let holo = HoloParams::default();
     let mut cam = overview();
     list.encode(&scene, &cam, SIZE);
-    off.draw(&list, &cam);
+    off.draw(&list, &cam, &holo);
     let shot = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/snapshots/bench_100k.png");
     engine::write_png(&shot, SIZE[0], SIZE[1], &off.read()).expect("write bench snapshot");
@@ -131,7 +132,7 @@ fn bench(c: &mut Criterion) {
                 cam.orbit(0.01, 0.0);
                 list.encode(&scene, &cam, SIZE);
                 let t = Instant::now();
-                off.draw(&list, &cam);
+                off.draw(&list, &cam, &holo);
                 off.gpu.wait();
                 total += t.elapsed();
             }
