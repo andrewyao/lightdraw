@@ -266,12 +266,14 @@ fn leaf(e: &Entry, slot: Slot) -> Leaf {
     }
 }
 
-/// Document colors are sRGB bytes. Shading happens in linear light.
 fn linear(c: Option<Rgba>, default: [f32; 4]) -> [f32; 4] {
-    c.map_or(default, |Rgba([r, g, b, a])| {
-        let ch = |v: u8| (f32::from(v) / 255.0).powf(2.2);
-        [ch(r), ch(g), ch(b), f32::from(a) / 255.0]
-    })
+    c.map_or(default, to_linear)
+}
+
+/// Document colors are sRGB bytes. Shading happens in linear light.
+pub(crate) fn to_linear(Rgba([r, g, b, a]): Rgba) -> [f32; 4] {
+    let ch = |v: u8| (f32::from(v) / 255.0).powf(2.2);
+    [ch(r), ch(g), ch(b), f32::from(a) / 255.0]
 }
 
 /// Half the drawn width of a connector or outline, in cells.

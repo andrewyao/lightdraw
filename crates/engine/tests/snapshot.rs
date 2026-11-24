@@ -217,3 +217,46 @@ fn an_empty_page_lights_the_ground_under_the_view() {
     let lit = shot.luma(ground);
     assert!(lit > 25.0, "the projector sits under the view: {lit}");
 }
+
+#[test]
+fn a_marker_draws_a_glowing_point_in_its_own_colour() {
+    let mut b = Builder::new();
+    let page = b.page();
+    let scene = engine::Scene::build(b.doc(), page);
+    let camera = side_camera(DVec3::new(0.0, 0.0, 3.0));
+    let at = DVec3::new(0.0, -4.0, 5.0);
+    let mut off = engine::Offscreen::new(SIZE).unwrap();
+    let mut list = engine::DrawList::default();
+    list.encode(&scene, &camera, SIZE);
+    let mut shoot = |markers: &[engine::Marker]| {
+        off.set_markers(markers);
+        off.draw(&list, &camera, &still());
+        Shot {
+            px: off.read(),
+            camera,
+        }
+    };
+    let none = shoot(&[]);
+    let red = engine::Marker {
+        pos: at.as_vec3(),
+        color: doc::Rgba([255, 40, 40, 255]),
+    };
+    let one = shoot(&[red]);
+    assert!(
+        one.luma(at) > none.luma(at) + 100.0,
+        "the marker lights its point: {} then {}",
+        none.luma(at),
+        one.luma(at)
+    );
+    let [r, g, bl] = one.rgb(at + DVec3::new(0.0, 0.0, 0.25));
+    assert!(
+        r > g + 40 && r > bl + 40,
+        "the glow keeps its red: {:?}",
+        [r, g, bl]
+    );
+    let away = at + DVec3::new(0.0, 6.0, 0.0);
+    assert!(
+        (one.luma(away) - none.luma(away)).abs() < 3.0,
+        "a point, not a wash"
+    );
+}

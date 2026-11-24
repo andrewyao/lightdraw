@@ -10,7 +10,7 @@ use crate::InitError;
 use crate::camera::Camera;
 use crate::encode::DrawList;
 use crate::holo::HoloParams;
-use crate::render::{Frame, Output, Renderer};
+use crate::render::{Frame, Marker, Output, Renderer};
 use crate::scene::Scene;
 
 /// A renderer drawing into a texture it can read back.
@@ -38,6 +38,11 @@ impl Offscreen {
 
     pub fn size(&self) -> [u32; 2] {
         [self.target.width(), self.target.height()]
+    }
+
+    /// The remote cursors every later `draw` shows, replacing the last set.
+    pub fn set_markers(&mut self, markers: &[Marker]) {
+        self.renderer.set_markers(markers);
     }
 
     /// Records and submits one frame. Returns without waiting for the GPU.

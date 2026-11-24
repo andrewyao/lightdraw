@@ -33,7 +33,7 @@ pub use camera::{Camera, View};
 pub use encode::DrawList;
 pub use face::Rect;
 pub use holo::HoloParams;
-pub use render::{Frame, Output, Renderer};
+pub use render::{Frame, Marker, Output, Renderer};
 pub use scene::Scene;
 
 /// A configured device and surface, ready to draw a frame.
@@ -164,6 +164,16 @@ impl Gpu {
         });
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
+    }
+
+    /// The remote cursors every later `draw` shows, replacing the last set.
+    pub fn set_markers(&mut self, markers: &[Marker]) {
+        self.renderer().set_markers(markers);
+    }
+
+    fn renderer(&mut self) -> &mut Renderer {
+        self.renderer
+            .get_or_insert_with(|| Renderer::new(&self.device, self.config.format))
     }
 
     /// Draws what `camera` sees of `scene` in the `holo` look and presents it.

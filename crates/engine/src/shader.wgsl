@@ -212,3 +212,46 @@ fn fs_cone(i: ConeOut) -> @location(0) vec4<f32> {
     let c = tint * thickness * fade * streaks * h.cone_intensity * 0.8;
     return vec4<f32>(c, 1.0);
 }
+
+struct MarkerIn {
+    // xyz: eye-relative position.
+    @location(0) at: vec4<f32>,
+    // Linear RGB, kept as given: remote cursors must stay told apart, so
+    // they do not join the hue family.
+    @location(1) color: vec4<f32>,
+};
+
+struct MarkerOut {
+    @builtin(position) clip: vec4<f32>,
+    // Offset from the centre, 1 at the sprite's edge.
+    @location(0) local: vec2<f32>,
+    @location(1) @interpolate(flat) color: vec3<f32>,
+};
+
+// Radius of a marker sprite in pixels, glow included.
+const MARKER_PX: f32 = 14.0;
+
+// A remote cursor: a sprite of fixed screen size at a point in the volume.
+@vertex
+fn vs_marker(i: MarkerIn, @builtin(vertex_index) vi: u32) -> MarkerOut {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let c = corners[vi];
+    let clip = g.view_proj * vec4<f32>(i.at.xyz, 1.0);
+    var o: MarkerOut;
+    o.clip = clip + vec4<f32>(c * MARKER_PX * 2.0 / g.eye.yz * clip.w, 0.0, 0.0);
+    o.local = c;
+    o.color = i.color.rgb;
+    return o;
+}
+
+@fragment
+fn fs_marker(i: MarkerOut) -> @location(0) vec4<f32> {
+    let r = length(i.local);
+    let core = 1.0 - smoothstep(0.22, 0.3, r);
+    let glow = exp(-r * r * 9.0) * (1.0 - smoothstep(0.8, 1.0, r));
+    let c = mix(i.color, vec3<f32>(1.0), core * 0.5) * (core * 3.0 + glow * 1.5);
+    return vec4<f32>(c, 1.0);
+}

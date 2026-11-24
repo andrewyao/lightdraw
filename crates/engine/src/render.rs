@@ -10,13 +10,15 @@
 //! Draws into any `TextureView`, so the browser surface and the offscreen
 //! path share every line here.
 
-use glam::{DVec3, Vec4};
+use doc::Rgba;
+use glam::{DVec3, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
 use crate::camera::Camera;
 use crate::encode::{DrawList, Instance};
 use crate::holo::HoloParams;
 use crate::mesh;
+use crate::scene::to_linear;
 
 pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -27,6 +29,9 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 const INSTANCE_BYTES: u64 = std::mem::size_of::<Instance>() as u64;
+/// Eye-relative position and padding, then linear RGBA.
+type MarkerInstance = [f32; 8];
+const MARKER_BYTES: u64 = std::mem::size_of::<MarkerInstance>() as u64;
 const HOLO_BYTES: usize = std::mem::size_of::<HoloParams>();
 const GLOBALS_BYTES: usize = 16 * 4 + 4 * 4 * 4 + HOLO_BYTES;
 /// Matches CONE_SEGMENTS in shader.wgsl, six vertices a segment.
@@ -90,6 +95,15 @@ pub struct Frame<'a> {
     pub holo: &'a HoloParams,
 }
 
+/// A remote participant's 3D cursor, drawn as a small glowing point of
+/// fixed screen size.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Marker {
+    /// World position in cells.
+    pub pos: Vec3,
+    pub color: Rgba,
+}
+
 #[derive(Debug)]
 pub struct Renderer {
     meshes: Vec<Mesh>,
@@ -99,6 +113,7 @@ pub struct Renderer {
     cone: wgpu::RenderPipeline,
     face: wgpu::RenderPipeline,
     line: wgpu::RenderPipeline,
+    marker: wgpu::RenderPipeline,
     prefilter: wgpu::RenderPipeline,
     down: wgpu::RenderPipeline,
     up: wgpu::RenderPipeline,
@@ -107,6 +122,8 @@ pub struct Renderer {
     sampler: wgpu::Sampler,
     instances: wgpu::Buffer,
     staging: Vec<Instance>,
+    markers: Vec<Marker>,
+    marker_buffer: wgpu::Buffer,
     targets: Option<Targets>,
 }
 
@@ -221,6 +238,19 @@ impl Renderer {
             Some(wgpu::Face::Back),
             false,
         );
+        let marker_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
+        let marker = scene_pipeline(
+            "marker",
+            "vs_marker",
+            "fs_marker",
+            &[Some(wgpu::VertexBufferLayout {
+                array_stride: MARKER_BYTES,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &marker_attrs,
+            })],
+            None,
+            false,
+        );
 
         let texture = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -328,6 +358,7 @@ impl Renderer {
             cone,
             face,
             line,
+            marker,
             prefilter,
             down,
             up,
@@ -336,8 +367,16 @@ impl Renderer {
             sampler,
             instances: instance_buffer(device, 1024),
             staging: Vec::new(),
+            markers: Vec::new(),
+            marker_buffer: marker_buffer(device, 16),
             targets: None,
         }
+    }
+
+    /// The cursors every later frame draws, replacing the last set.
+    pub fn set_markers(&mut self, markers: &[Marker]) {
+        self.markers.clear();
+        self.markers.extend_from_slice(markers);
     }
 
     /// Draws `frame` into `output`. Only records commands; the caller
@@ -371,6 +410,24 @@ impl Renderer {
         }
         if !self.staging.is_empty() {
             queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&self.staging));
+        }
+
+        let eye = frame.camera.eye();
+        let markers: Vec<MarkerInstance> = self
+            .markers
+            .iter()
+            .map(|m| {
+                let rel = (m.pos.as_dvec3() - eye).as_vec3();
+                let [r, g, b, a] = to_linear(m.color);
+                [rel.x, rel.y, rel.z, 0.0, r, g, b, a]
+            })
+            .collect();
+        let needed = markers.len() as u64 * MARKER_BYTES;
+        if needed > self.marker_buffer.size() {
+            self.marker_buffer = marker_buffer(device, needed.next_power_of_two() / MARKER_BYTES);
+        }
+        if !markers.is_empty() {
+            queue.write_buffer(&self.marker_buffer, 0, bytemuck::cast_slice(&markers));
         }
 
         let t = self.targets.as_ref().expect("made above");
@@ -415,6 +472,11 @@ impl Renderer {
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(0..mesh.count, 0, range);
+            }
+            if !markers.is_empty() {
+                pass.set_pipeline(&self.marker);
+                pass.set_vertex_buffer(0, self.marker_buffer.slice(..));
+                pass.draw(0..6, 0..markers.len() as u32);
             }
         }
 
@@ -550,6 +612,15 @@ fn instance_buffer(device: &wgpu::Device, count: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("instances"),
         size: count.max(1) * INSTANCE_BYTES,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn marker_buffer(device: &wgpu::Device, count: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("markers"),
+        size: count.max(1) * MARKER_BYTES,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
