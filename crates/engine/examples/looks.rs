@@ -4,6 +4,8 @@
 //! - `look_<preset>.png` at 1280x800.
 //! - `looks_sheet.png`: the default at full size on the left, the other four
 //!   at half size in a 2x2 grid on the right, in preset order.
+//! - `look_text_closeup.png`: the default, moved in on the labelled shapes
+//!   so glyphs can be judged.
 //! - `orbit/0000.png`.. 24 frames over 2 s, and `orbit.mp4` and `orbit.gif`
 //!   when `ffmpeg` is on PATH.
 //!
@@ -14,6 +16,7 @@ use std::process::Command;
 
 use doc::library::ComponentDef;
 use engine::{DrawList, HoloParams, Offscreen, Scene, demo, write_png};
+use glam::DVec3;
 
 const SIZE: [u32; 2] = [1280, 800];
 const FRAMES: u32 = 24;
@@ -52,6 +55,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sheet = out.join("looks_sheet.png");
     write_png(&sheet, SIZE[0] * 2, SIZE[1], &contact_sheet(&stills))?;
     println!("{}", sheet.display());
+
+    let closeup = engine::Camera {
+        target: DVec3::new(4.0, 1.0, 2.0),
+        distance: 16.0,
+        ..camera
+    };
+    list.encode(&scene, &closeup, SIZE);
+    let holo = HoloParams {
+        time: STILL_TIME,
+        ..HoloParams::default()
+    };
+    off.draw(&list, &closeup, &holo);
+    let path = out.join("look_text_closeup.png");
+    write_png(&path, SIZE[0], SIZE[1], &off.read())?;
+    println!("{}", path.display());
 
     let frames = out.join("orbit");
     std::fs::create_dir_all(&frames)?;
