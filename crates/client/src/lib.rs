@@ -2,5 +2,9 @@
 //! covers them. The wasm shell in `main.rs` drives them.
 
 pub mod camera;
+pub mod components;
+pub mod floors;
 pub mod history;
 pub mod interaction;
+pub mod look;
+pub mod overlay;
