@@ -2,6 +2,12 @@
 
 #[cfg(target_arch = "wasm32")]
 mod app;
+#[cfg(target_arch = "wasm32")]
+mod collab;
+#[cfg(target_arch = "wasm32")]
+mod debug;
+#[cfg(target_arch = "wasm32")]
+mod editor;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {
@@ -10,6 +16,6 @@ fn main() {
 }
 
 // The client only runs in a browser. The host build exists so workspace-wide
-// `cargo test` and `cargo clippy` cover this crate.
+// `cargo test` and `cargo clippy` cover the pure modules in `lib.rs`.
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {}
