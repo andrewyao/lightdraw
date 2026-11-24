@@ -29,3 +29,7 @@ workspace = true
 [dev-dependencies]
 criterion = "0.8"
 doc = { path = "../doc", features = ["ron"] }
+
+[[bench]]
+name = "frame"
+harness = false
