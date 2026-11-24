@@ -459,7 +459,9 @@ impl Editor {
         }
         let mut holo = self.ui.holo.get_untracked();
         holo.time = (now_ms / 1000.0) as f32;
+        let markers = self.markers();
         if let Some(g) = &mut self.gpu {
+            g.set_markers(&markers);
             g.draw(&self.scene, &self.camera, &holo);
         }
         if let Some(el) = &self.overlay {
@@ -473,6 +475,23 @@ impl Editor {
                 self.sent_at = now_ms;
             }
         }
+    }
+
+    /// Remote 3D cursors, drawn by the engine as glowing markers.
+    fn markers(&self) -> Vec<engine::Marker> {
+        let Some(r) = self.collab.replica() else {
+            return Vec::new();
+        };
+        r.peers()
+            .iter()
+            .filter(|(c, _)| **c != r.client())
+            .filter_map(|(c, p)| {
+                Some(engine::Marker {
+                    pos: glam::Vec3::from(p.cursor?.get()),
+                    color: overlay::peer_rgba(c.get()),
+                })
+            })
+            .collect()
     }
 
     fn overlay_svg(&self) -> String {
@@ -504,10 +523,8 @@ impl Editor {
             floors: self.floors,
         });
         format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}" preserveAspectRatio="none" style="width:100%;height:100%"><defs><filter id="glow" x="-1" y="-1" width="3" height="3"><feGaussianBlur stdDeviation="{}"/></filter></defs>{body}</svg>"#,
-            self.size[0],
-            self.size[1],
-            4.0 * self.dpr
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}" preserveAspectRatio="none" style="width:100%;height:100%">{body}</svg>"#,
+            self.size[0], self.size[1],
         )
     }
 
@@ -515,8 +532,7 @@ impl Editor {
         let Mode::EditingText { node, face } = self.state.mode else {
             return None;
         };
-        let [l, t, w, h] =
-            overlay::text_rect(self.doc(), &self.scene, &self.camera, self.size, node, face)?;
+        let [l, t, w, h] = overlay::text_rect(&self.scene, &self.camera, self.size, node, face)?;
         let value = match self.doc().node(node) {
             Some(
                 doc::Node::Shape { body, .. }

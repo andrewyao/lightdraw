@@ -8,13 +8,13 @@
 
 use std::fmt::Write as _;
 
-use doc::{Axis, CellBox, Doc, Face, NodeId, OccId, Presence};
+use doc::{Axis, CellBox, Doc, Face, NodeId, OccId, Presence, Rgba};
 use engine::scene::Look;
 use engine::{Camera, Scene};
 use glam::DVec3;
 
 use crate::floors::Floors;
-use crate::interaction::{Mode, State, Tool, axis_dir, drawn, face_axis};
+use crate::interaction::{Mode, State, Tool, axis_dir, drawn};
 
 /// Everything one overlay frame reads.
 #[derive(Debug)]
@@ -54,6 +54,23 @@ fn corners(b: CellBox) -> (DVec3, DVec3) {
 /// Golden-ratio hue spacing, so neighbors in id order differ most.
 pub fn peer_hue(client: u32) -> f64 {
     (f64::from(client) * 0.618_033_988_75).fract() * 360.0
+}
+
+/// A peer's color for the engine's cursor markers: hue `peer_hue`, full
+/// saturation, light.
+pub fn peer_rgba(client: u32) -> Rgba {
+    let h = peer_hue(client) / 60.0;
+    let x = 1.0 - (h % 2.0 - 1.0).abs();
+    let (r, g, b) = match h as u32 {
+        0 => (1.0, x, 0.0),
+        1 => (x, 1.0, 0.0),
+        2 => (0.0, 1.0, x),
+        3 => (0.0, x, 1.0),
+        4 => (x, 0.0, 1.0),
+        _ => (1.0, 0.0, x),
+    };
+    let c = |v: f64| (80.0 + v * 175.0) as u8;
+    Rgba([c(r), c(g), c(b), 255])
 }
 
 /// The gizmo's origin and arrow length for the selection, if any.
@@ -129,42 +146,36 @@ pub fn link_at(
 
 /// Device-pixel rect (left, top, width, height) the text overlay covers.
 pub fn text_rect(
-    doc: &Doc,
     scene: &Scene,
     cam: &Camera,
     size: [u32; 2],
     node: NodeId,
     face: Option<Face>,
 ) -> Option<[f64; 4]> {
-    let pts: Vec<[f64; 2]> = match face {
+    let id = OccId {
+        via: Vec::new(),
+        node,
+    };
+    let (min, max) = match face {
         Some(f) => {
-            let (lo, hi) = corners(world(doc, node)?);
-            let k = face_axis(f);
-            let level = if matches!(f, Face::PosX | Face::PosY | Face::PosZ) {
-                hi[k]
-            } else {
-                lo[k]
-            };
-            box_points(lo, hi)
-                .into_iter()
-                .filter(|p| p[k] == level)
-                .filter_map(|p| cam.project(p, size))
-                .collect()
+            let r = scene.face_screen_rect(&id, f, cam, size)?;
+            (r.min, r.max)
         }
         None => {
-            let e = scene.entries().find(|e| e.id.selects() == node)?;
+            let e = scene.get(&id)?;
             let mid = cam.project((e.min + e.max) / 2.0, size)?;
-            vec![
+            (
                 [mid[0] - 90.0, mid[1] - 16.0],
                 [mid[0] + 90.0, mid[1] + 16.0],
-            ]
+            )
         }
     };
-    let (mut l, mut t, mut r, mut b) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-    for p in &pts {
-        (l, t, r, b) = (l.min(p[0]), t.min(p[1]), r.max(p[0]), b.max(p[1]));
-    }
-    (!pts.is_empty()).then_some([l, t, (r - l).max(120.0), (b - t).max(28.0)])
+    Some([
+        min[0],
+        min[1],
+        (max[0] - min[0]).max(120.0),
+        (max[1] - min[1]).max(28.0),
+    ])
 }
 
 fn box_points(lo: DVec3, hi: DVec3) -> [DVec3; 8] {
@@ -413,14 +424,6 @@ pub fn svg(f: &Frame) -> String {
         let [x, y, z] = c.get();
         let at = DVec3::new(f64::from(x), f64::from(y), f64::from(z));
         let hue = peer_hue(*id);
-        if let Some([px, py]) = s.p(at) {
-            let _ = write!(
-                s.out,
-                r#"<circle cx="{px:.1}" cy="{py:.1}" r="{:.1}" style="fill: hsla({hue:.0},95%,70%,0.25); filter: url(#glow)"/><circle cx="{px:.1}" cy="{py:.1}" r="{:.1}" style="fill: hsl({hue:.0},95%,75%)"/>"#,
-                9.0 * w,
-                3.5 * w,
-            );
-        }
         s.text(
             at,
             -8.0,
