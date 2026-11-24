@@ -56,7 +56,7 @@ fn edge_px(e: vec4<f32>) -> f32 {
 // thins toward the top.
 fn height_falloff(rel_z: f32) -> f32 {
     let h = (rel_z + g.eye.x - g.stage2.y) / max(g.stage2.x, 1.0);
-    return mix(1.0, 0.55, clamp(h, 0.0, 1.0));
+    return mix(1.0, 0.45, clamp(h, 0.0, 1.0));
 }
 
 // Fine horizontal bands drifting up through the volume.
@@ -80,7 +80,12 @@ fn fs_face(i: SolidOut, @builtin(front_facing) front: bool) -> @location(0) vec4
     // Far side of the volume, seen through the near side.
     let depth = select(0.45, 1.0, front);
     let body = (h.face_alpha + rim) * interference(i.rel.z);
-    let hot = mix(i.tint, vec3<f32>(1.0), 0.15) * (line + halo) * h.edge_intensity;
+    // Faces only a few pixels across would be all edge; fade their lines so
+    // a dense, distant crowd reads as volume rather than a white sheet.
+    let fw = fwidth(i.edge);
+    let span = 1.0 / max(max(max(fw.x, fw.y), max(fw.z, fw.w)), 1e-6);
+    let detail = smoothstep(4.0, 24.0, span);
+    let hot = mix(i.tint, vec3<f32>(1.0), 0.15) * (line + halo) * detail * h.edge_intensity;
     let c = (i.tint * body + hot) * depth * height_falloff(i.rel.z);
     return vec4<f32>(c, 1.0);
 }
@@ -197,7 +202,7 @@ fn fs_cone(i: ConeOut) -> @location(0) vec4<f32> {
     // Light seen through more of the volume where the view meets the tube
     // head-on, and soft where it grazes.
     let thickness = abs(dot(normalize(i.nrm), normalize(-i.rel)));
-    let fade = pow(1.0 - i.up, 2.2);
+    let fade = pow(1.0 - i.up, 3.0);
     let streaks = 0.85 + 0.15 * sin(i.around * 6.2831853 * 23.0)
         * sin(i.around * 6.2831853 * 7.0 + 1.3);
     let c = tint * thickness * fade * streaks * h.cone_intensity * 0.8;
