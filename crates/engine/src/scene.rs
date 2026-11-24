@@ -12,7 +12,8 @@ use doc::{Axis, Dirty, Doc, Face, Item, NodeId, OccId, Profile, Rgba};
 use glam::DVec3;
 use rstar::{AABB, RTree, RTreeObject, SelectionFunction};
 
-use crate::camera::{Frustum, Ray};
+use crate::camera::{Camera, Frustum, Ray};
+use crate::face::{self, Rect};
 use crate::route;
 
 /// What an occurrence draws as.
@@ -160,6 +161,21 @@ impl Scene {
         self.tree
             .locate_with_selection_function(OnRay(ray))
             .filter_map(|l| self.entry(l.slot))
+    }
+
+    /// Where `face` of occurrence `id` lands on screen, in device pixels with
+    /// the origin top-left: the box around its four projected corners. The
+    /// client positions its text editor over it. None when the occurrence is
+    /// not on this page or the face reaches behind the camera.
+    pub fn face_screen_rect(
+        &self,
+        id: &OccId,
+        face: Face,
+        camera: &Camera,
+        size: [u32; 2],
+    ) -> Option<Rect> {
+        let e = self.get(id)?;
+        face::screen_rect(&face::quad(e.min, e.max, face), camera, size)
     }
 
     fn entry(&self, slot: Slot) -> Option<&Entry> {
@@ -506,6 +522,45 @@ pub(crate) mod tests {
         scene.refresh(b.doc(), &dirty);
         assert_eq!(scene.get(&own_id(id)).unwrap().min.x, 5.0);
         assert_matches_rebuild(&scene, b.doc());
+    }
+
+    #[test]
+    fn a_face_screen_rect_bounds_the_projected_corners_of_that_face() {
+        let mut b = Builder::new();
+        let page = b.page();
+        let id = b.shape(page, Profile::Rect, Axis::Z, [2, 3, 0], [4, 2, 3], [255; 4]);
+        let scene = Scene::build(b.doc(), page);
+        let cam = Camera::default();
+        let size = [800, 600];
+        let r = scene
+            .face_screen_rect(&own(id), Face::NegY, &cam, size)
+            .unwrap();
+        // The -Y face spans x 2..6 and z 0..3 at y = 3.
+        let corners = [(2.0, 0.0), (6.0, 0.0), (2.0, 3.0), (6.0, 3.0)]
+            .map(|(x, z)| cam.project(DVec3::new(x, 3.0, z), size).unwrap());
+        let lo = corners
+            .iter()
+            .fold([f64::MAX; 2], |a, c| [a[0].min(c[0]), a[1].min(c[1])]);
+        let hi = corners
+            .iter()
+            .fold([f64::MIN; 2], |a, c| [a[0].max(c[0]), a[1].max(c[1])]);
+        assert_eq!((r.min, r.max), (lo, hi));
+        assert!(r.max[0] - r.min[0] > 10.0 && r.max[1] - r.min[1] > 10.0);
+        assert!(
+            scene
+                .face_screen_rect(&own(id), Face::PosZ, &cam, size)
+                .unwrap()
+                != r
+        );
+        let behind = Camera {
+            target: DVec3::new(4.0, 4.0, 1.5),
+            distance: 0.5,
+            ..cam
+        };
+        assert_eq!(
+            scene.face_screen_rect(&own(id), Face::NegY, &behind, size),
+            None
+        );
     }
 
     #[test]

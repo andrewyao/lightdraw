@@ -3,6 +3,7 @@
 //! - `scene`   the engine's mirror of one page, refreshed from `Dirty`.
 //! - `camera`  orbit camera, rays, frusta, and the off-axis projection.
 //! - `pick`    exact ray picking and work-plane snapping.
+//! - `face`    box faces in world space and on screen.
 //! - `encode`  cull and encode one frame on the CPU.
 //! - `render`  the GPU passes. Draws into any texture view.
 //! - `holo`    the hologram look's tunables.
@@ -13,6 +14,7 @@ use std::fmt;
 pub mod camera;
 pub mod demo;
 pub mod encode;
+pub mod face;
 mod holo;
 mod mesh;
 pub mod pick;
@@ -29,6 +31,7 @@ pub use headless::{
 
 pub use camera::{Camera, View};
 pub use encode::DrawList;
+pub use face::Rect;
 pub use holo::HoloParams;
 pub use render::{Frame, Output, Renderer};
 pub use scene::Scene;
