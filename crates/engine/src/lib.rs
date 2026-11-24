@@ -6,6 +6,7 @@
 //! - `face`    box faces in world space and on screen.
 //! - `encode`  cull and encode one frame on the CPU.
 //! - `render`  the GPU passes. Draws into any texture view.
+//! - `text`    label layout, the glyph atlas, and glyph placement.
 //! - `holo`    the hologram look's tunables.
 //! - `demo`    fixture documents, built through a `Replica`.
 
@@ -21,6 +22,7 @@ pub mod pick;
 mod render;
 mod route;
 pub mod scene;
+mod text;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;

@@ -1,7 +1,8 @@
 //! GPU side: meshes, pipelines, and the passes of a frame.
 //!
 //! Scene pass. The floor (lattice and projector disc), the light cone,
-//! faces, and lines all add light into an HDR target, so nothing is sorted.
+//! faces, lines, label glyphs, and remote cursors all add light into an HDR
+//! target, so nothing is sorted.
 //! Post. A bright pass and downsample chain at half resolution and below,
 //! an additive upsample back up the chain, then one composite that adds the
 //! bloom, scanlines, flicker, noise, and aberration, and tonemaps to the
@@ -15,10 +16,11 @@ use glam::{DVec3, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
 use crate::camera::Camera;
-use crate::encode::{DrawList, Instance};
+use crate::encode::{DrawList, GlyphInstance, Instance};
 use crate::holo::HoloParams;
 use crate::mesh;
 use crate::scene::to_linear;
+use crate::text::ATLAS_SIZE;
 
 pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -32,6 +34,7 @@ const INSTANCE_BYTES: u64 = std::mem::size_of::<Instance>() as u64;
 /// Eye-relative position and padding, then linear RGBA.
 type MarkerInstance = [f32; 8];
 const MARKER_BYTES: u64 = std::mem::size_of::<MarkerInstance>() as u64;
+const GLYPH_BYTES: u64 = std::mem::size_of::<GlyphInstance>() as u64;
 const HOLO_BYTES: usize = std::mem::size_of::<HoloParams>();
 const GLOBALS_BYTES: usize = 16 * 4 + 4 * 4 * 4 + HOLO_BYTES;
 /// Matches CONE_SEGMENTS in shader.wgsl, six vertices a segment.
@@ -114,6 +117,7 @@ pub struct Renderer {
     face: wgpu::RenderPipeline,
     line: wgpu::RenderPipeline,
     marker: wgpu::RenderPipeline,
+    glyph: wgpu::RenderPipeline,
     prefilter: wgpu::RenderPipeline,
     down: wgpu::RenderPipeline,
     up: wgpu::RenderPipeline,
@@ -124,6 +128,11 @@ pub struct Renderer {
     staging: Vec<Instance>,
     markers: Vec<Marker>,
     marker_buffer: wgpu::Buffer,
+    glyphs: wgpu::Buffer,
+    atlas: wgpu::Texture,
+    atlas_group: wgpu::BindGroup,
+    /// The `Atlas::version` last uploaded.
+    atlas_version: u64,
     targets: Option<Targets>,
 }
 
@@ -252,6 +261,108 @@ impl Renderer {
             false,
         );
 
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("linear"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let atlas = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyph atlas"),
+            size: wgpu::Extent3d {
+                width: ATLAS_SIZE,
+                height: ATLAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("glyph atlas"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let atlas_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("glyph atlas"),
+            layout: &atlas_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(
+                        &atlas.create_view(&Default::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        let glyph_attrs = wgpu::vertex_attr_array![
+            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+        ];
+        let glyph = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("glyph"),
+            layout: Some(
+                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("glyph"),
+                    bind_group_layouts: &[Some(&globals_layout), Some(&atlas_layout)],
+                    immediate_size: 0,
+                }),
+            ),
+            vertex: wgpu::VertexState {
+                module: &scene_shader,
+                entry_point: Some("vs_glyph"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: GLYPH_BYTES,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &glyph_attrs,
+                })],
+            },
+            primitive: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &scene_shader,
+                entry_point: Some("fs_glyph"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(ADD),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let texture = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -323,12 +434,6 @@ impl Renderer {
             output,
             None,
         );
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("post"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
 
         let meshes = mesh::PROFILES
             .iter()
@@ -359,6 +464,7 @@ impl Renderer {
             face,
             line,
             marker,
+            glyph,
             prefilter,
             down,
             up,
@@ -369,6 +475,10 @@ impl Renderer {
             staging: Vec::new(),
             markers: Vec::new(),
             marker_buffer: marker_buffer(device, 16),
+            glyphs: glyph_buffer(device, 256),
+            atlas,
+            atlas_group,
+            atlas_version: 0,
             targets: None,
         }
     }
@@ -410,6 +520,27 @@ impl Renderer {
         }
         if !self.staging.is_empty() {
             queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&self.staging));
+        }
+
+        let needed = list.glyphs.len() as u64 * GLYPH_BYTES;
+        if needed > self.glyphs.size() {
+            self.glyphs = glyph_buffer(device, needed.next_power_of_two() / GLYPH_BYTES);
+        }
+        if !list.glyphs.is_empty() {
+            queue.write_buffer(&self.glyphs, 0, bytemuck::cast_slice(&list.glyphs));
+        }
+        if list.atlas.version != self.atlas_version && !list.atlas.data.is_empty() {
+            queue.write_texture(
+                self.atlas.as_image_copy(),
+                &list.atlas.data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(ATLAS_SIZE),
+                    rows_per_image: None,
+                },
+                self.atlas.size(),
+            );
+            self.atlas_version = list.atlas.version;
         }
 
         let eye = frame.camera.eye();
@@ -472,6 +603,12 @@ impl Renderer {
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(0..mesh.count, 0, range);
+            }
+            if !list.glyphs.is_empty() {
+                pass.set_pipeline(&self.glyph);
+                pass.set_bind_group(1, &self.atlas_group, &[]);
+                pass.set_vertex_buffer(0, self.glyphs.slice(..));
+                pass.draw(0..6, 0..list.glyphs.len() as u32);
             }
             if !markers.is_empty() {
                 pass.set_pipeline(&self.marker);
@@ -612,6 +749,15 @@ fn instance_buffer(device: &wgpu::Device, count: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("instances"),
         size: count.max(1) * INSTANCE_BYTES,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn glyph_buffer(device: &wgpu::Device, count: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("glyphs"),
+        size: count.max(1) * GLYPH_BYTES,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })

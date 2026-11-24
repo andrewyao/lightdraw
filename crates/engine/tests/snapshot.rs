@@ -260,3 +260,77 @@ fn a_marker_draws_a_glowing_point_in_its_own_colour() {
         "a point, not a wash"
     );
 }
+
+/// Summed brightness inside `face`'s screen rect of the one shape on the
+/// page, with and without `label` on it.
+fn text_light(label: Option<doc::Face>, face: doc::Face, camera: Camera) -> f64 {
+    let mut b = Builder::new();
+    let page = b.page();
+    let id = b.shape(
+        page,
+        Profile::Rect,
+        Axis::Z,
+        [-2, -2, 0],
+        [4, 4, 2],
+        [40, 200, 255, 255],
+    );
+    if let Some(on) = label {
+        b.label(id, "Label", on);
+    }
+    let scene = engine::Scene::build(b.doc(), page);
+    let occ = doc::OccId {
+        via: vec![],
+        node: id,
+    };
+    let r = scene.face_screen_rect(&occ, face, &camera, SIZE).unwrap();
+    let px = render_rgba(b.doc(), &camera, SIZE, &still()).unwrap();
+    let mut sum = 0.0;
+    for y in r.min[1].max(0.0) as usize..r.max[1].min(f64::from(SIZE[1])) as usize {
+        for x in r.min[0].max(0.0) as usize..r.max[0].min(f64::from(SIZE[0])) as usize {
+            let i = (y * SIZE[0] as usize + x) * 4;
+            sum += px[i..i + 3].iter().map(|&c| f64::from(c)).sum::<f64>();
+        }
+    }
+    sum
+}
+
+fn above(distance: f64) -> Camera {
+    Camera {
+        target: DVec3::new(0.0, 0.0, 1.0),
+        yaw: -1.2,
+        pitch: 0.9,
+        distance,
+        fov_y: 50f64.to_radians(),
+    }
+}
+
+#[test]
+fn a_label_lights_its_face() {
+    use doc::Face::PosZ;
+    let bare = text_light(None, PosZ, above(12.0));
+    let lit = text_light(Some(PosZ), PosZ, above(12.0));
+    assert!(
+        lit > bare * 1.02,
+        "text adds light to the top: {bare} then {lit}"
+    );
+}
+
+#[test]
+fn a_label_on_the_far_side_shows_dimmer_than_on_the_near_side() {
+    use doc::Face::{NegZ, PosZ};
+    let bare = text_light(None, PosZ, above(12.0));
+    let near = text_light(Some(PosZ), PosZ, above(12.0)) - bare;
+    let far = text_light(Some(NegZ), PosZ, above(12.0)) - bare;
+    assert!(far > 0.0, "seen through the volume, not hidden: {far}");
+    assert!(far < near * 0.4, "far side {far} against near side {near}");
+}
+
+#[test]
+fn a_label_too_small_to_read_is_not_drawn() {
+    use doc::Face::PosZ;
+    let far = above(400.0);
+    assert_eq!(
+        text_light(None, PosZ, far),
+        text_light(Some(PosZ), PosZ, far)
+    );
+}

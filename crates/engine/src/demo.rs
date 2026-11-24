@@ -10,8 +10,8 @@ use glam::DVec3;
 
 use crate::camera::Camera;
 use doc::{
-    Attr, Authority, Axis, Cell, CellVec, Change, Dirty, Doc, Endpoint, Extent, Intrinsic, Kind,
-    NodeId, Position, Profile, Replica, Rgba,
+    Attr, Authority, Axis, Cell, CellVec, Change, Dirty, Doc, Endpoint, Extent, Face, Intrinsic,
+    Kind, NodeId, Position, Profile, Replica, Rgba,
 };
 
 #[derive(Debug)]
@@ -116,6 +116,14 @@ impl Builder {
         id
     }
 
+    /// Sets `node`'s text and the face it is drawn on.
+    pub fn label(&mut self, node: NodeId, text: &str, face: Face) -> Dirty {
+        self.edit(vec![
+            Change::set(node, Attr::Text(text.to_string())),
+            Change::set(node, Attr::TextFace(face)),
+        ])
+    }
+
     /// Moves `node` to `at`, relative to its parent.
     pub fn move_to(&mut self, node: NodeId, at: [i32; 3]) -> Dirty {
         self.edit(vec![
@@ -168,8 +176,10 @@ pub struct Showcase {
 }
 
 /// The demo scene: boxes, a cylinder, a flat diamond tile, a hexagon prism on
-/// its side along X, a cylinder lying along Y, a frame holding a shape, an instance of `rack`, and two
-/// connectors. The rack's master sits on a second page, `library`, so the
+/// its side along X, a cylinder lying along Y, a frame holding a shape, an
+/// instance of `rack`, and two connectors. Labels sit on the crate's and
+/// cylinder's tops, the tower's front, the rack's servers, and the first
+/// connector. The rack's master sits on a second page, `library`, so the
 /// canvas page shows it only through its instance.
 pub fn showcase(rack: &ComponentDef) -> (Builder, Showcase) {
     let mut b = Builder::new();
@@ -230,6 +240,10 @@ pub fn showcase(rack: &ComponentDef) -> (Builder, Showcase) {
     let rack = b.instance(rack_master, canvas, [-1, -10, 0]);
     let link_a = b.connector(canvas, Endpoint::Node(crate_box), Endpoint::Node(cylinder));
     let link_b = b.connector(canvas, Endpoint::Node(tower), Endpoint::Node(rack));
+    b.label(crate_box, "Ingest", Face::PosZ);
+    b.label(tower, "API gateway", Face::NegY);
+    b.label(cylinder, "Cache", Face::PosZ);
+    b.label(link_a, "events", Face::PosZ);
     (
         b,
         Showcase {

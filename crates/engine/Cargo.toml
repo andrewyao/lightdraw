@@ -6,12 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-# wgpu 30 is the version glyphon 0.12 (its newest release) builds against.
-# Bump both together.
 [dependencies]
 doc = { path = "../doc" }
 wgpu = { version = "30", features = ["webgl"] }
-glyphon = "0.12"
+ab_glyph = { version = "0.2", default-features = false, features = ["std"] }
 glam = "0.34"
 rstar = "0.12"
 bytemuck = { version = "1", features = ["derive"] }

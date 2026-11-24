@@ -255,3 +255,57 @@ fn fs_marker(i: MarkerOut) -> @location(0) vec4<f32> {
     let c = mix(i.color, vec3<f32>(1.0), core * 0.5) * (core * 3.0 + glow * 1.5);
     return vec4<f32>(c, 1.0);
 }
+
+// The glyph atlas: a distance field, 0.5 on each outline and higher inside.
+@group(1) @binding(0) var atlas: texture_2d<f32>;
+@group(1) @binding(1) var atlas_sampler: sampler;
+
+struct GlyphIn {
+    // xyz: eye-relative lower-left corner. w: brightness, lower on the far
+    // side of the volume.
+    @location(0) at: vec4<f32>,
+    @location(1) right: vec4<f32>,
+    @location(2) up: vec4<f32>,
+    // Atlas rectangle: left, top, right, bottom.
+    @location(3) uv: vec4<f32>,
+    @location(4) color: vec4<f32>,
+};
+
+struct GlyphOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) rel: vec3<f32>,
+    @location(2) @interpolate(flat) tint: vec3<f32>,
+    @location(3) @interpolate(flat) brightness: f32,
+};
+
+@vertex
+fn vs_glyph(i: GlyphIn, @builtin(vertex_index) vi: u32) -> GlyphOut {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 1.0),
+    );
+    let c = corners[vi];
+    let rel = i.at.xyz + i.right.xyz * c.x + i.up.xyz * c.y;
+    var o: GlyphOut;
+    o.clip = g.view_proj * vec4<f32>(rel, 1.0);
+    o.uv = vec2<f32>(mix(i.uv.x, i.uv.z, c.x), mix(i.uv.w, i.uv.y, c.y));
+    o.rel = rel;
+    o.tint = family(i.color.rgb);
+    o.brightness = i.at.w;
+    return o;
+}
+
+// Glyphs glow like edges: a hot, slightly whitened core in the object's
+// hue, and a faint halo the field gives for free. Bright enough to bloom.
+@fragment
+fn fs_glyph(i: GlyphOut) -> @location(0) vec4<f32> {
+    let d = textureSample(atlas, atlas_sampler, i.uv).r;
+    let aa = max(fwidth(d) * 0.7, 1e-3);
+    let core = smoothstep(0.5 - aa, 0.5 + aa, d);
+    let halo = smoothstep(0.25, 0.5, d) * 0.15;
+    let hot = mix(i.tint, vec3<f32>(1.0), 0.3);
+    let c = hot * (core * 1.8 + halo) * g.holo.edge_intensity * i.brightness
+        * interference(i.rel.z);
+    return vec4<f32>(c, 1.0);
+}

@@ -6,6 +6,7 @@
 //! a `Dirty` root can drop exactly what was derived from it last time, even
 //! when the root has since moved or left the tree, and re-walk it.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 
 use doc::{Axis, Dirty, Doc, Face, Item, NodeId, OccId, Profile, Rgba};
@@ -15,6 +16,7 @@ use rstar::{AABB, RTree, RTreeObject, SelectionFunction};
 use crate::camera::{Camera, Frustum, Ray};
 use crate::face::{self, Rect};
 use crate::route;
+use crate::text::Layout;
 
 /// What an occurrence draws as.
 #[derive(Clone, Debug, PartialEq)]
@@ -41,8 +43,11 @@ pub struct Entry {
     pub max: DVec3,
     /// Linear RGBA.
     pub color: [f32; 4],
-    /// Hook for the text pass: the string and the face it is drawn on.
+    /// The text and the face it is drawn on. A connector's label ignores
+    /// the face and faces the camera.
     pub label: Option<(String, Face)>,
+    /// `label` laid out, on first draw. See `text`.
+    pub(crate) text: OnceCell<Layout>,
     parent: Option<Slot>,
     kids: Vec<Slot>,
 }
@@ -335,6 +340,7 @@ fn make(id: OccId, item: &Item<'_>, parent: Option<Slot>) -> Option<Entry> {
         max,
         color,
         label,
+        text: OnceCell::new(),
         parent,
         kids: Vec::new(),
     })

@@ -9,6 +9,8 @@ use glam::DVec3;
 use crate::camera::Camera;
 use crate::mesh;
 use crate::scene::{LINE_RADIUS, Look, Scene};
+pub use crate::text::GlyphInstance;
+use crate::text::{self, Atlas, Eye};
 
 /// One instance as the vertex shader reads it: eye-relative box min, axis,
 /// box size, padding, linear RGBA.
@@ -30,6 +32,10 @@ pub struct DrawList {
     /// World bounds of the whole page, not just what is visible, so the
     /// projector stays put as the camera moves.
     pub bounds: Option<(DVec3, DVec3)>,
+    /// Label glyphs big enough on screen to read.
+    pub glyphs: Vec<GlyphInstance>,
+    /// Every glyph the labels have needed. Kept across frames.
+    pub(crate) atlas: Atlas,
 }
 
 impl DrawList {
@@ -47,10 +53,15 @@ impl DrawList {
             s.clear();
         }
         self.lines.clear();
+        self.glyphs.clear();
         self.bounds = scene.bounds();
         let eye = camera.eye();
         let frustum = camera.frustum(size);
+        let view = Eye::new(camera, size);
         for e in scene.visible(&frustum) {
+            if e.label.is_some() {
+                text::emit(&mut self.glyphs, &mut self.atlas, e, &view);
+            }
             match &e.look {
                 Look::Solid { profile, axis } => {
                     let axis = match axis {
@@ -112,7 +123,113 @@ fn outline(out: &mut Vec<Instance>, lo: DVec3, hi: DVec3, eye: DVec3, color: [f3
 mod tests {
     use super::*;
     use crate::demo::Builder;
-    use doc::{Axis, Profile};
+    use crate::text::FAR_SIDE;
+    use doc::{Axis, Endpoint, Face, Profile};
+
+    /// A labelled 4x4x2 box at the origin, and its scene.
+    fn labelled(face: Face) -> Scene {
+        let mut b = Builder::new();
+        let page = b.page();
+        let id = b.shape(page, Profile::Rect, Axis::Z, [0, 0, 0], [4, 4, 2], [255; 4]);
+        b.label(id, "Hello world", face);
+        Scene::build(b.doc(), page)
+    }
+
+    fn looking_at_box(pitch: f64, distance: f64) -> Camera {
+        Camera {
+            target: DVec3::new(2.0, 2.0, 1.0),
+            pitch,
+            distance,
+            ..Camera::default()
+        }
+    }
+
+    #[test]
+    fn a_label_draws_its_glyphs_on_its_face_until_too_small_to_read() {
+        let scene = labelled(Face::PosZ);
+        let mut list = DrawList::default();
+        list.encode(&scene, &looking_at_box(0.8, 20.0), [800, 600]);
+        assert_eq!(list.glyphs.len(), "Helloworld".len());
+        for g in &list.glyphs {
+            assert_eq!(g[3], 1.0, "the top faces this camera");
+            let corner =
+                DVec3::new(g[0].into(), g[1].into(), g[2].into()) + looking_at_box(0.8, 20.0).eye();
+            assert!((corner.z - 2.0).abs() < 0.01, "on the top face: {corner}");
+            assert!(corner.x > 0.0 && corner.x < 4.0 && corner.y > 0.0 && corner.y < 4.0);
+        }
+        list.encode(&scene, &looking_at_box(0.8, 2000.0), [800, 600]);
+        assert!(list.glyphs.is_empty(), "under the LOD threshold far away");
+        assert_eq!(list.len(), 1, "the box itself still draws");
+    }
+
+    #[test]
+    fn editing_a_label_or_resizing_its_shape_lays_it_out_again() {
+        let mut b = Builder::new();
+        let page = b.page();
+        let id = b.shape(page, Profile::Rect, Axis::Z, [0, 0, 0], [4, 4, 2], [255; 4]);
+        b.label(id, "Hello", Face::PosZ);
+        let mut scene = Scene::build(b.doc(), page);
+        let cam = looking_at_box(0.8, 20.0);
+        let mut list = DrawList::default();
+        list.encode(&scene, &cam, [800, 600]);
+        assert_eq!(list.glyphs.len(), 5);
+
+        let dirty = b.label(id, "Hello there", Face::PosZ);
+        scene.refresh(b.doc(), &dirty);
+        list.encode(&scene, &cam, [800, 600]);
+        assert_eq!(list.glyphs.len(), 10, "the new text, not the cached one");
+
+        let height = |list: &DrawList| list.glyphs.iter().map(|g| g[9]).fold(0.0, f32::max);
+        let before = height(&list);
+        let dirty = b.edit(vec![doc::Change::set(id, doc::Attr::H(doc::Extent(1)))]);
+        scene.refresh(b.doc(), &dirty);
+        list.encode(&scene, &cam, [800, 600]);
+        assert!(height(&list) < before, "a narrower face, smaller text");
+    }
+
+    #[test]
+    fn text_on_a_face_turned_away_draws_at_the_far_side_brightness() {
+        let scene = labelled(Face::NegZ);
+        let mut list = DrawList::default();
+        list.encode(&scene, &looking_at_box(0.8, 20.0), [800, 600]);
+        assert!(!list.glyphs.is_empty());
+        assert!(list.glyphs.iter().all(|g| g[3] == FAR_SIDE));
+        list.encode(&scene, &looking_at_box(-0.8, 20.0), [800, 600]);
+        assert!(list.glyphs.iter().all(|g| g[3] == 1.0), "seen from below");
+    }
+
+    #[test]
+    fn a_connector_label_faces_the_camera_at_its_midpoint() {
+        let mut b = Builder::new();
+        let page = b.page();
+        let white = [255; 4];
+        let a = b.shape(page, Profile::Rect, Axis::Z, [0, 0, 0], [2, 2, 2], white);
+        let z = b.shape(page, Profile::Rect, Axis::Z, [10, 0, 0], [2, 2, 2], white);
+        let link = b.connector(page, Endpoint::Node(a), Endpoint::Node(z));
+        b.label(link, "uplink", Face::PosZ);
+        let scene = Scene::build(b.doc(), page);
+        let cam = Camera {
+            target: DVec3::new(6.0, 1.0, 1.0),
+            distance: 15.0,
+            ..Camera::default()
+        };
+        let mut list = DrawList::default();
+        list.encode(&scene, &cam, [800, 600]);
+        assert_eq!(list.glyphs.len(), "uplink".len());
+        let basis = cam.basis();
+        for g in &list.glyphs {
+            let right = DVec3::new(g[4].into(), g[5].into(), g[6].into()).normalize();
+            let up = DVec3::new(g[8].into(), g[9].into(), g[10].into()).normalize();
+            assert!(right.distance(basis.right) < 1e-4 && up.distance(basis.up) < 1e-4);
+        }
+        let xs: Vec<f64> = list
+            .glyphs
+            .iter()
+            .map(|g| f64::from(g[0]) + cam.eye().x)
+            .collect();
+        let mid = (xs[0] + xs[xs.len() - 1]) / 2.0;
+        assert!((mid - 6.0).abs() < 1.5, "centred near the middle: {mid}");
+    }
 
     #[test]
     fn a_shape_far_from_the_origin_encodes_at_full_precision() {
