@@ -12,8 +12,8 @@
 //! a glyph is never re-rasterised as the camera moves.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, OnceLock};
 
 use ab_glyph::{Font, FontRef, GlyphId, PxScale, point};
 use doc::{Face, Profile};
@@ -82,6 +82,18 @@ pub struct Layout {
 impl Layout {
     pub fn height(&self) -> f32 {
         self.lines as f32 * LINE * self.em
+    }
+}
+
+/// An entry's layout, made on first draw. Boxed so the many unlabelled
+/// entries stay small. A derived value, so it never makes two entries
+/// unequal.
+#[derive(Clone, Debug, Default)]
+pub struct LayoutCache(OnceLock<Box<Layout>>);
+
+impl PartialEq for LayoutCache {
+    fn eq(&self, _: &LayoutCache) -> bool {
+        true
     }
 }
 
@@ -161,15 +173,15 @@ fn usable(look: &Look, q: &Quad, face: Face) -> (f32, f32) {
 
 /// The layout cached on `e`, made on first use.
 pub fn layout(e: &Entry) -> &Layout {
-    e.text.get_or_init(|| {
+    e.text.0.get_or_init(|| {
         let (Some(t), Some((text, _))) = (target(e), &e.label) else {
-            return Layout::default();
+            return Box::default();
         };
         let mut l = fit(text, t.width, t.height, t.max_em, t.min_em);
         if let Some(half) = t.above {
             l.rise = half + l.height() / 2.0 + TITLE_GAP * l.em;
         }
-        l
+        Box::new(l)
     })
 }
 
@@ -635,6 +647,13 @@ fn edt_1d(f: &[f64], d: &mut [f64], v: &mut [usize], z: &mut [f64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scenes_and_draw_lists_can_cross_threads() {
+        fn shareable<T: Send + Sync>() {}
+        shareable::<crate::Scene>();
+        shareable::<crate::DrawList>();
+    }
 
     fn text(l: &Layout) -> String {
         let f = &*FONT;
