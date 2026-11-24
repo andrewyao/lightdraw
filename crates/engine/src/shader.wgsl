@@ -296,15 +296,19 @@ fn vs_glyph(i: GlyphIn, @builtin(vertex_index) vi: u32) -> GlyphOut {
     return o;
 }
 
-// Glyphs glow like edges: a hot, slightly whitened core in the object's
-// hue, and a faint halo the field gives for free. Bright enough to bloom.
+// The field value drawn as the outline. Below 0.5 is bolder.
+const GLYPH_EDGE: f32 = 0.45;
+
+// Glyphs glow like edges: a hot core in the object's hue, and a faint
+// halo the field gives for free. Bright enough to bloom.
 @fragment
 fn fs_glyph(i: GlyphOut) -> @location(0) vec4<f32> {
     let d = textureSample(atlas, atlas_sampler, i.uv).r;
     let aa = max(fwidth(d) * 0.7, 1e-3);
-    let core = smoothstep(0.5 - aa, 0.5 + aa, d);
+    // Thickens the outline a little: Regular reads thin once it glows.
+    let core = smoothstep(GLYPH_EDGE - aa, GLYPH_EDGE + aa, d);
     let halo = smoothstep(0.25, 0.5, d) * 0.15;
-    let hot = mix(i.tint, vec3<f32>(1.0), 0.3);
+    let hot = mix(i.tint, vec3<f32>(1.0), 0.1);
     let c = hot * (core * 1.8 + halo) * g.holo.edge_intensity * i.brightness
         * interference(i.rel.z);
     return vec4<f32>(c, 1.0);
