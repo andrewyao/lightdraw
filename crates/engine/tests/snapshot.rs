@@ -62,6 +62,12 @@ fn the_demo_snapshot_shows_its_shapes() {
         "hexagon top is amber: {:?}",
         [r, g, bl]
     );
+    let [r, g, bl] = at(top(ids.pipe));
+    assert!(
+        r > g + 60 && r > bl + 60,
+        "Y-axis pipe top is red: {:?}",
+        [r, g, bl]
+    );
     let [r, g, bl] = at(top(ids.crate_box));
     assert!(bl > r + 60, "crate top is cyan: {:?}", [r, g, bl]);
 }

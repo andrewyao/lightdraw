@@ -1,13 +1,18 @@
 //! Connector routing: an orthogonal elbow path between two resolved ends.
 //!
 //! The path runs from the centre of one end to the centre of the other, one
-//! axis at a time, longest leg first (ties go X, Y, Z). Then it is cut where
-//! it leaves the source box and where it enters the target box.
+//! axis at a time, and is then cut where it leaves the source box and where
+//! it enters the target box.
 //!
-//! Every leg is axis-aligned and the first and last legs pass through a box
-//! centre, so each cut lands on a point where all four profiles touch their
-//! bounding box (the midpoint of a side, or a cap). Cutting at the box is
-//! therefore cutting at the shape's surface, and the router needs no profile.
+//! The legs are ordered so the cuts land on the shape's surface. The first
+//! leg leaves the source along the axis where it clears the source box by
+//! the most, and the last leg enters the target the same way. Both pass
+//! through a box centre, and on such a line all four profiles touch their
+//! bounding box (the midpoint of a side, or a cap). So cutting at the box is
+//! cutting at the surface, and the router needs no profile. When both ends
+//! want the same axis, the path doglegs halfway across the gap between the
+//! two boxes. Boxes that overlap on every axis get a path that may stop
+//! short of a curved surface.
 
 use doc::{CellBox, End};
 use glam::DVec3;
@@ -22,37 +27,72 @@ pub fn bounds(b: &CellBox) -> (DVec3, DVec3) {
     (min, min + size)
 }
 
-fn anchor(end: &End) -> (DVec3, Option<(DVec3, DVec3)>) {
+/// Centre, half extent, and box (None for a free point).
+fn anchor(end: &End) -> (DVec3, DVec3, Option<(DVec3, DVec3)>) {
     match end {
         End::At(c) => (
             DVec3::new(f64::from(c.x.0), f64::from(c.y.0), f64::from(c.z.0)),
+            DVec3::ZERO,
             None,
         ),
         End::On { world, .. } => {
             let (lo, hi) = bounds(world);
-            ((lo + hi) / 2.0, Some((lo, hi)))
+            ((lo + hi) / 2.0, (hi - lo) / 2.0, Some((lo, hi)))
         }
     }
 }
 
+/// The axis along which a leg through the centre clears the box by the
+/// most. Ties go X, Y, Z.
+fn clearest(delta: DVec3, half: DVec3) -> usize {
+    let clear = delta.abs() - half;
+    (0..3).fold(0, |best, k| if clear[k] > clear[best] { k } else { best })
+}
+
 /// The drawn path, at least two points. Deterministic in its inputs.
 pub fn route(from: &End, to: &End) -> Vec<DVec3> {
-    let (a, a_box) = anchor(from);
-    let (b, b_box) = anchor(to);
+    let (a, ha, a_box) = anchor(from);
+    let (b, hb, b_box) = anchor(to);
     let delta = b - a;
-    let mut axes = [0usize, 1, 2];
-    axes.sort_by(|&i, &j| delta[j].abs().total_cmp(&delta[i].abs()).then(i.cmp(&j)));
+    let (ka, kb) = (clearest(delta, ha), clearest(delta, hb));
     let mut path = vec![a];
     let mut at = a;
-    for i in axes {
-        if delta[i] != 0.0 {
-            at[i] = b[i];
-            path.push(at);
+    let mut step = |at: &mut DVec3, k: usize, to: f64| {
+        if at[k] != to {
+            at[k] = to;
+            path.push(*at);
         }
+    };
+    if ka != kb {
+        let middle = 3 - ka - kb;
+        for k in [ka, middle, kb] {
+            step(&mut at, k, b[k]);
+        }
+    } else {
+        let k = ka;
+        let s = delta[k].signum();
+        let gap_mid = ((a[k] + s * ha[k]) + (b[k] - s * hb[k])) / 2.0;
+        step(&mut at, k, gap_mid);
+        for m in (0..3).filter(|&m| m != k) {
+            step(&mut at, m, b[m]);
+        }
+        step(&mut at, k, b[k]);
     }
     if path.len() == 1 {
         path.push(b);
     }
+    // A dogleg with nothing to cross leaves a straight run in two legs.
+    let mut path: Vec<DVec3> = path
+        .iter()
+        .enumerate()
+        .filter(|&(i, p)| {
+            i == 0 || i + 1 == path.len() || {
+                let (d0, d1) = (*p - path[i - 1], path[i + 1] - *p);
+                d0.cross(d1) != DVec3::ZERO
+            }
+        })
+        .map(|(_, p)| *p)
+        .collect();
     if let Some((lo, hi)) = a_box {
         path = leave(&path, lo, hi);
     }
@@ -117,8 +157,9 @@ mod tests {
             path,
             vec![
                 DVec3::new(2.0, 1.0, 1.0),
-                DVec3::new(11.0, 1.0, 1.0),
-                DVec3::new(11.0, 4.0, 1.0),
+                DVec3::new(6.0, 1.0, 1.0),
+                DVec3::new(6.0, 5.0, 1.0),
+                DVec3::new(10.0, 5.0, 1.0),
             ]
         );
         for w in path.windows(2) {
@@ -135,5 +176,22 @@ mod tests {
             path,
             vec![DVec3::new(1.0, 1.0, 2.0), DVec3::new(1.0, 1.0, 9.0)]
         );
+    }
+
+    /// 0 when `p` is on the side of the Z-axis ellipse inscribed in the box.
+    fn off_ellipse(p: DVec3, lo: DVec3, hi: DVec3) -> f64 {
+        let (c, h) = ((lo + hi) / 2.0, (hi - lo) / 2.0);
+        let (a, b) = ((p.x - c.x) / h.x, (p.y - c.y) / h.y);
+        (a * a + b * b).sqrt() - 1.0
+    }
+
+    #[test]
+    fn a_connector_to_a_cylinder_ends_on_its_curved_side() {
+        // The demo's crate to cylinder: the target is off-centre in x and z.
+        let path = route(&on((0, 0, 0), (3, 3, 2)), &on((1, 8, 0), (3, 3, 3)));
+        let end = *path.last().unwrap();
+        let gap = off_ellipse(end, DVec3::new(1.0, 8.0, 0.0), DVec3::new(4.0, 11.0, 3.0));
+        assert!(gap.abs() < 1e-12, "end {end} is {gap} off the surface");
+        assert_eq!(path[0].y, 3.0, "starts on the crate's +Y face: {path:?}");
     }
 }

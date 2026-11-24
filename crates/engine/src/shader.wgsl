@@ -79,7 +79,9 @@ fn vs_grid(@builtin(vertex_index) vi: u32) -> GridOut {
     );
     let local = corners[vi] * g.grid.w;
     var o: GridOut;
-    o.clip = g.view_proj * vec4<f32>(g.grid.xyz + vec3<f32>(local, 0.0), 1.0);
+    // A hair below z = 0, so flat tiles on the ground hide the lines under
+    // them instead of fighting them for depth.
+    o.clip = g.view_proj * vec4<f32>(g.grid.xyz + vec3<f32>(local, -0.01), 1.0);
     o.local = local;
     return o;
 }

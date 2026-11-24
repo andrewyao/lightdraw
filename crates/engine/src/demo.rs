@@ -158,6 +158,7 @@ pub struct Showcase {
     pub cylinder: NodeId,
     pub tile: NodeId,
     pub hex: NodeId,
+    pub pipe: NodeId,
     pub frame: NodeId,
     pub frame_child: NodeId,
     pub rack: NodeId,
@@ -167,7 +168,7 @@ pub struct Showcase {
 }
 
 /// The demo scene: boxes, a cylinder, a flat diamond tile, a hexagon prism on
-/// its side, a frame holding a shape, an instance of `rack`, and two
+/// its side along X, a cylinder lying along Y, a frame holding a shape, an instance of `rack`, and two
 /// connectors. The rack's master sits on a second page, `library`, so the
 /// canvas page shows it only through its instance.
 pub fn showcase(rack: &ComponentDef) -> (Builder, Showcase) {
@@ -209,6 +210,14 @@ pub fn showcase(rack: &ComponentDef) -> (Builder, Showcase) {
         [4, 3, 3],
         [255, 200, 80, 255],
     );
+    let pipe = b.shape(
+        canvas,
+        Profile::Ellipse,
+        Axis::Y,
+        [4, -7, 0],
+        [2, 4, 2],
+        [255, 90, 90, 255],
+    );
     let frame = b.frame(canvas, [12, -7, 0], [6, 5, 3]);
     let frame_child = b.shape(
         frame,
@@ -231,6 +240,7 @@ pub fn showcase(rack: &ComponentDef) -> (Builder, Showcase) {
             cylinder,
             tile,
             hex,
+            pipe,
             frame,
             frame_child,
             rack,

@@ -378,6 +378,26 @@ mod tests {
     }
 
     #[test]
+    fn a_cylinder_along_y_is_hit_on_its_cap_and_side_and_missed_in_its_corner() {
+        let (b, ids) = showcase(&rack());
+        let scene = Scene::build(b.doc(), ids.canvas);
+        let mut cam = tilted(DVec3::new(5.0, -7.0, 1.0));
+        cam.snap(View::Front);
+        let centre = [512.0, 384.0];
+        let cap = pick(&scene, &cam.ray(centre, SIZE)).unwrap();
+        assert_eq!((cap.id.node, cap.face()), (ids.pipe, Some(Face::NegY)));
+        let corner = cam.project(DVec3::new(4.1, -7.0, 1.9), SIZE).unwrap();
+        let through = pick(&scene, &cam.ray(corner, SIZE)).map(|h| h.id.node);
+        assert_ne!(through, Some(ids.pipe), "the corner of its box is empty");
+
+        cam.snap(View::Top);
+        cam.target = DVec3::new(5.0, -5.0, 2.0);
+        let top = pick(&scene, &cam.ray(centre, SIZE)).unwrap();
+        assert_eq!((top.id.node, top.face()), (ids.pipe, Some(Face::PosZ)));
+        assert!(near(top.point, DVec3::new(5.0, -5.0, 2.0)), "{}", top.point);
+    }
+
+    #[test]
     fn work_plane_hits_snap_to_whole_cells_under_a_tilted_camera() {
         let cam = tilted(DVec3::ZERO);
         let ground = WorkPlane {

@@ -35,7 +35,8 @@ pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    renderer: Renderer,
+    /// Built on the first `draw`, so a page that only clears pays nothing.
+    renderer: Option<Renderer>,
     list: DrawList,
 }
 
@@ -95,13 +96,12 @@ impl Gpu {
             .get_default_config(&adapter, width.max(1), height.max(1))
             .ok_or(InitError::UnsupportedSurface)?;
         surface.configure(&device, &config);
-        let renderer = Renderer::new(&device, config.format);
         Ok(Gpu {
             surface,
             device,
             queue,
             config,
-            renderer,
+            renderer: None,
             list: DrawList::default(),
         })
     }
@@ -169,7 +169,10 @@ impl Gpu {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
-        self.renderer.render(
+        let renderer = self
+            .renderer
+            .get_or_insert_with(|| Renderer::new(&self.device, self.config.format));
+        renderer.render(
             &self.device,
             &self.queue,
             &mut encoder,
