@@ -3,8 +3,8 @@
 //! active floor. Everything is projected from 3D with `Camera::project` into
 //! one SVG whose units are device pixels.
 //!
-//! The gizmo and connector hit tests live here too, so what the pointer hits
-//! is exactly what was drawn.
+//! The gizmo, resize handle, and connector hit tests live here too, so what
+//! the pointer hits is exactly what was drawn.
 
 use std::fmt::Write as _;
 
@@ -13,8 +13,9 @@ use engine::scene::Look;
 use engine::{Camera, Scene};
 use glam::DVec3;
 
+use crate::camera::Dimension;
 use crate::floors::Floors;
-use crate::interaction::{Mode, State, Tool, axis_dir, drawn};
+use crate::interaction::{Corner, Handle, Mode, State, Tool, axis_dir, drawn, sized_box};
 
 /// Everything one overlay frame reads.
 #[derive(Debug)]
@@ -30,6 +31,7 @@ pub struct Frame<'a> {
     pub hover: Option<NodeId>,
     pub peers: Vec<(u32, &'a Presence)>,
     pub floors: Option<Floors>,
+    pub dimension: Dimension,
 }
 
 pub fn world(doc: &Doc, node: NodeId) -> Option<CellBox> {
@@ -98,6 +100,72 @@ fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     (x * x + y * y).sqrt()
 }
 
+/// Half a resize handle's side, in CSS pixels.
+const HANDLE_PX: f64 = 5.0;
+
+/// The resize handles: in 2D, the top corners of the one selected node, when
+/// its size is its own.
+pub fn handles(doc: &Doc, selection: &[NodeId], dimension: Dimension) -> Vec<Handle> {
+    let ([node], Dimension::Two) = (selection, dimension) else {
+        return Vec::new();
+    };
+    let (Some(_), Some(b)) = (sized_box(doc, *node), world(doc, *node)) else {
+        return Vec::new();
+    };
+    let (lo, hi) = corners(b);
+    Corner::ALL
+        .into_iter()
+        .map(|corner| Handle {
+            node: *node,
+            corner,
+            at: DVec3::new(
+                if corner.high_x { hi.x } else { lo.x },
+                if corner.high_y { hi.y } else { lo.y },
+                hi.z,
+            ),
+        })
+        .collect()
+}
+
+/// The resize handle within `tol` device pixels of `px`, by square distance.
+pub fn handle_at(
+    handles: &[Handle],
+    cam: &Camera,
+    size: [u32; 2],
+    px: [f64; 2],
+    tol: f64,
+) -> Option<Handle> {
+    handles
+        .iter()
+        .filter_map(|h| {
+            let [x, y] = cam.project(h.at, size)?;
+            let d = (x - px[0]).abs().max((y - px[1]).abs());
+            (d <= tol).then_some((d, *h))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, h)| h)
+}
+
+/// Arrows shorter than this on screen point at the viewer and are left out.
+const MIN_ARROW_PX: f64 = 12.0;
+
+/// The gizmo's arrows that read on screen: each axis with its start and tip
+/// in pixels.
+fn arrows(
+    c: DVec3,
+    len: f64,
+    cam: &Camera,
+    size: [u32; 2],
+) -> impl Iterator<Item = (Axis, [f64; 2], [f64; 2])> {
+    let a = cam.project(c, size);
+    [Axis::X, Axis::Y, Axis::Z]
+        .into_iter()
+        .filter_map(move |ax| {
+            let (a, b) = (a?, cam.project(c + axis_dir(ax) * len, size)?);
+            (seg_dist(a, b, b) >= MIN_ARROW_PX).then_some((ax, a, b))
+        })
+}
+
 /// The gizmo arrow within `tol` device pixels of `px`.
 pub fn gizmo_at(
     doc: &Doc,
@@ -108,13 +176,8 @@ pub fn gizmo_at(
     tol: f64,
 ) -> Option<(Axis, DVec3)> {
     let (c, len) = gizmo(doc, selection)?;
-    let a = cam.project(c, size)?;
-    [Axis::X, Axis::Y, Axis::Z]
-        .into_iter()
-        .filter_map(|ax| {
-            let b = cam.project(c + axis_dir(ax) * len, size)?;
-            Some((seg_dist(px, a, b), ax))
-        })
+    arrows(c, len, cam, size)
+        .map(|(ax, a, b)| (seg_dist(px, a, b), ax))
         .filter(|(d, _)| *d <= tol)
         .min_by(|x, y| x.0.total_cmp(&y.0))
         .map(|(_, ax)| (ax, c))
@@ -395,11 +458,12 @@ pub fn svg(f: &Frame) -> String {
     let gizmo_on =
         f.tool == Tool::Select && matches!(f.state.mode, Mode::Idle | Mode::GizmoDrag { .. });
     if gizmo_on && let Some((c, len)) = gizmo(f.doc, &f.state.selection) {
-        for (ax, color) in [
-            (Axis::X, "#ff5a6e"),
-            (Axis::Y, "#6eff8a"),
-            (Axis::Z, "#5aa8ff"),
-        ] {
+        for (ax, ..) in arrows(c, len, f.camera, f.size) {
+            let color = match ax {
+                Axis::X => "#ff5a6e",
+                Axis::Y => "#6eff8a",
+                Axis::Z => "#5aa8ff",
+            };
             let tip = c + axis_dir(ax) * len;
             s.line(
                 c,
@@ -414,6 +478,25 @@ pub fn svg(f: &Frame) -> String {
                     s.out,
                     r#"<circle cx="{x:.1}" cy="{y:.1}" r="{:.1}" style="fill: {color}"/>"#,
                     5.0 * w
+                );
+            }
+        }
+    }
+
+    let handles_on =
+        f.tool == Tool::Select && matches!(f.state.mode, Mode::Idle | Mode::Resizing { .. });
+    if handles_on {
+        let r = HANDLE_PX * w;
+        for h in handles(f.doc, &f.state.selection, f.dimension) {
+            if let Some([x, y]) = s.p(h.at) {
+                let _ = write!(
+                    s.out,
+                    r#"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" style="fill: #0b1016; stroke: #7fd8ff; stroke-width: {:.1}"/>"#,
+                    x - r,
+                    y - r,
+                    2.0 * r,
+                    2.0 * r,
+                    1.5 * w
                 );
             }
         }
@@ -464,5 +547,57 @@ mod tests {
             );
         }
         assert_eq!(gizmo_at(b.doc(), &[n], &cam, size, [0.0, 0.0], 4.0), None);
+    }
+
+    #[test]
+    fn looking_down_an_axis_leaves_its_arrow_out() {
+        let mut b = Builder::new();
+        let page = b.page();
+        let n = b.shape(
+            page,
+            doc::Profile::Rect,
+            Axis::Z,
+            [0, 0, 0],
+            [2, 2, 2],
+            [0; 4],
+        );
+        let mut cam = Camera::default();
+        crate::camera::settle(&mut cam, crate::camera::Dimension::Two);
+        let size = [800, 600];
+        let (c, len) = gizmo(b.doc(), &[n]).expect("selection has a box");
+        let axes: Vec<Axis> = arrows(c, len, &cam, size).map(|a| a.0).collect();
+        assert_eq!(axes, [Axis::X, Axis::Y]);
+    }
+
+    #[test]
+    fn only_a_single_selection_in_2d_gets_corner_handles_at_its_top() {
+        let mut b = Builder::new();
+        let page = b.page();
+        let mut shape = |at| b.shape(page, doc::Profile::Rect, Axis::Z, at, [3, 2, 1], [0; 4]);
+        let (n, m) = (shape([1, 1, 0]), shape([9, 9, 0]));
+        assert!(handles(b.doc(), &[n], Dimension::Three).is_empty());
+        assert!(handles(b.doc(), &[n, m], Dimension::Two).is_empty());
+        let hs = handles(b.doc(), &[n], Dimension::Two);
+        let at: Vec<[f64; 3]> = hs.iter().map(|h| h.at.to_array()).collect();
+        assert_eq!(
+            at,
+            [
+                [1.0, 1.0, 1.0],
+                [4.0, 1.0, 1.0],
+                [4.0, 3.0, 1.0],
+                [1.0, 3.0, 1.0]
+            ]
+        );
+
+        let mut cam = Camera::default();
+        crate::camera::settle(&mut cam, Dimension::Two);
+        let size = [800, 600];
+        let far = cam.project(hs[2].at, size).unwrap();
+        let near = [far[0] + 3.0, far[1] - 2.0];
+        assert_eq!(handle_at(&hs, &cam, size, near, 6.0), Some(hs[2]));
+        assert_eq!(
+            handle_at(&hs, &cam, size, [far[0] + 30.0, far[1]], 6.0),
+            None
+        );
     }
 }

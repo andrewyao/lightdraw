@@ -6,11 +6,13 @@ struct SolidIn {
     @location(1) nrm: vec3<f32>,
     // xyz: eye-relative box min. w: axis (0 X, 1 Y, 2 Z).
     @location(2) at: vec4<f32>,
-    // xyz: box size.
+    // xyz: box size. w: border width in pixels.
     @location(3) size: vec4<f32>,
+    // The fill; alpha is its opacity in the flat style.
     @location(4) color: vec4<f32>,
     // Zero on an edge. See mesh.rs.
     @location(5) edge: vec4<f32>,
+    @location(6) stroke: vec4<f32>,
 };
 
 struct SolidOut {
@@ -19,6 +21,10 @@ struct SolidOut {
     @location(1) nrm: vec3<f32>,
     @location(2) edge: vec4<f32>,
     @location(3) @interpolate(flat) tint: vec3<f32>,
+    @location(4) @interpolate(flat) edge_tint: vec3<f32>,
+    @location(5) @interpolate(flat) fill: vec4<f32>,
+    @location(6) @interpolate(flat) stroke: vec4<f32>,
+    @location(7) @interpolate(flat) stroke_px: f32,
 };
 
 // Mesh (u, v, w) to world axes. Must match pick::frame_axes.
@@ -43,6 +49,10 @@ fn vs_solid(i: SolidIn) -> SolidOut {
     o.nrm = place(i.nrm, i.at.w) / max(i.size.xyz, vec3<f32>(1e-4));
     o.edge = i.edge;
     o.tint = family(i.color.rgb);
+    o.edge_tint = family(i.stroke.rgb);
+    o.fill = i.color;
+    o.stroke = i.stroke;
+    o.stroke_px = i.size.w;
     return o;
 }
 
@@ -66,15 +76,30 @@ fn interference(rel_z: f32) -> f32 {
     return 1.0 - 0.6 * g.holo.scanline_strength * s;
 }
 
+// A fill at this opacity or more shows the full hologram body; below it
+// fades out. Matches DEFAULT_FILL_ALPHA in scene.rs.
+const DEFAULT_FILL_ALPHA: f32 = 0.14;
+const DEFAULT_STROKE_PX: f32 = 2.0;
+
 @fragment
 fn fs_face(i: SolidOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let h = g.holo;
+    let px = edge_px(i.edge);
+    let has_border = step(0.01, i.stroke_px);
+    // Flat style: the fill, then the border inside the edge, painted over
+    // what is below in premultiplied alpha. Front faces only.
+    if flat() {
+        let line = (1.0 - smoothstep(i.stroke_px - 0.5, i.stroke_px + 0.5, px)) * has_border;
+        let s = line * i.stroke.a;
+        let a = i.fill.a * (1.0 - s);
+        let c = vec4<f32>(i.fill.rgb * a + i.stroke.rgb * s, a + s);
+        return c * select(0.0, 1.0, front);
+    }
     let v = normalize(-i.rel);
     let n = normalize(i.nrm) * select(-1.0, 1.0, front);
     let facing = clamp(dot(n, v), 0.0, 1.0);
     let rim = pow(1.0 - facing, h.rim_power) * h.rim_intensity;
-    let px = edge_px(i.edge);
-    let w = max(h.edge_width, 0.01);
+    let w = max(h.edge_width * i.stroke_px / DEFAULT_STROKE_PX, 0.01);
     let line = 1.0 - smoothstep(w, w + 1.0, px);
     let halo = exp(-px / (w * 3.0)) * 0.25;
     // Far side of the volume, seen through the near side.
@@ -82,14 +107,16 @@ fn fs_face(i: SolidOut, @builtin(front_facing) front: bool) -> @location(0) vec4
     // Each pane brightens toward its border, in face space, so flat faces
     // read as lit glass rather than flat fill.
     let inner = 1.0 - smoothstep(0.0, 0.5, min(min(i.edge.x, i.edge.y), min(i.edge.z, i.edge.w)));
-    let body = (h.face_alpha * (0.6 + 1.4 * inner * inner) + rim) * interference(i.rel.z);
+    let body = (h.face_alpha * (0.6 + 1.4 * inner * inner) + rim) * interference(i.rel.z)
+        * smoothstep(0.0, DEFAULT_FILL_ALPHA, i.fill.a);
     // Faces only a few pixels across would be all edge; fade their lines so
     // a dense, distant crowd reads as volume rather than a white sheet.
     let fw = fwidth(i.edge);
     let span = 1.0 / max(max(max(fw.x, fw.y), max(fw.z, fw.w)), 1e-6);
     let detail = smoothstep(4.0, 24.0, span);
     let far_edges = select(0.4, 1.0, front);
-    let hot = mix(i.tint, vec3<f32>(1.0), 0.06) * (line + halo) * detail * far_edges * h.edge_intensity;
+    let hot = mix(i.edge_tint, vec3<f32>(1.0), 0.06) * (line + halo) * detail * far_edges
+        * h.edge_intensity * has_border;
     let c = (i.tint * body + hot) * depth * height_falloff(i.rel.z);
     return vec4<f32>(c, 1.0);
 }
@@ -97,6 +124,9 @@ fn fs_face(i: SolidOut, @builtin(front_facing) front: bool) -> @location(0) vec4
 // Connectors and outlines: thin boxes that are all edge.
 @fragment
 fn fs_line(i: SolidOut) -> @location(0) vec4<f32> {
+    if flat() {
+        return vec4<f32>(i.tint, 1.0);
+    }
     let c = mix(i.tint, vec3<f32>(1.0), 0.06) * g.holo.edge_intensity * 0.45;
     return vec4<f32>(c, 1.0);
 }
@@ -131,9 +161,19 @@ fn ring(r: f32, at: f32, width_px: f32) -> f32 {
     return 1.0 - smoothstep(0.0, width_px, abs(r - at) / max(fwidth(r), 1e-6));
 }
 
+// Flat style: a neutral lattice, even everywhere.
+const FLAT_MINOR: f32 = 0.012;
+const FLAT_MAJOR: f32 = 0.035;
+
 @fragment
 fn fs_floor(i: FloorOut) -> @location(0) vec4<f32> {
     let h = g.holo;
+    if flat() {
+        let density = max(fwidth(i.local).x, fwidth(i.local).y);
+        let minor = grid_line(i.local) * (1.0 - smoothstep(0.1, 0.35, density));
+        let major = grid_line(i.local / 10.0);
+        return vec4<f32>(vec3<f32>(max(minor * FLAT_MINOR, major * FLAT_MAJOR)), 1.0);
+    }
     let tint = hsv2rgb(vec3<f32>(h.hue, h.saturation, 1.0));
     let to_stage = g.grid.xy + i.local - g.stage.xy;
     let radius = g.stage.w;
@@ -251,6 +291,9 @@ fn vs_marker(i: MarkerIn, @builtin(vertex_index) vi: u32) -> MarkerOut {
 fn fs_marker(i: MarkerOut) -> @location(0) vec4<f32> {
     let r = length(i.local);
     let core = 1.0 - smoothstep(0.22, 0.3, r);
+    if flat() {
+        return vec4<f32>(i.color * core, 1.0);
+    }
     let glow = exp(-r * r * 9.0) * (1.0 - smoothstep(0.8, 1.0, r));
     let c = mix(i.color, vec3<f32>(1.0), core * 0.5) * (core * 3.0 + glow * 1.5);
     return vec4<f32>(c, 1.0);
@@ -268,7 +311,9 @@ struct GlyphIn {
     @location(2) up: vec4<f32>,
     // Atlas rectangle: left, top, right, bottom.
     @location(3) uv: vec4<f32>,
+    // Linear RGBA in the hologram, then in the flat style.
     @location(4) color: vec4<f32>,
+    @location(5) flat_color: vec4<f32>,
 };
 
 struct GlyphOut {
@@ -277,6 +322,7 @@ struct GlyphOut {
     @location(1) rel: vec3<f32>,
     @location(2) @interpolate(flat) tint: vec3<f32>,
     @location(3) @interpolate(flat) brightness: f32,
+    @location(4) @interpolate(flat) flat_color: vec4<f32>,
 };
 
 @vertex
@@ -293,6 +339,7 @@ fn vs_glyph(i: GlyphIn, @builtin(vertex_index) vi: u32) -> GlyphOut {
     o.rel = rel;
     o.tint = family(i.color.rgb);
     o.brightness = i.at.w;
+    o.flat_color = i.flat_color;
     return o;
 }
 
@@ -307,6 +354,10 @@ fn fs_glyph(i: GlyphOut) -> @location(0) vec4<f32> {
     let aa = max(fwidth(d) * 0.7, 1e-3);
     // Thickens the outline a little: Regular reads thin once it glows.
     let core = smoothstep(GLYPH_EDGE - aa, GLYPH_EDGE + aa, d);
+    if flat() {
+        let a = core * i.flat_color.a;
+        return vec4<f32>(i.flat_color.rgb * a, a);
+    }
     let halo = smoothstep(0.25, 0.5, d) * 0.15;
     let hot = mix(i.tint, vec3<f32>(1.0), 0.1);
     let c = hot * (core * 1.8 + halo) * g.holo.edge_intensity * i.brightness

@@ -40,8 +40,7 @@ pub struct Entry {
     /// World bounds in cells. For a connector, the bounds of its path.
     pub min: DVec3,
     pub max: DVec3,
-    /// Linear RGBA.
-    pub color: [f32; 4],
+    pub shade: Shade,
     /// The text and the face it is drawn on. A connector's label ignores
     /// the face and faces the camera.
     pub label: Option<(String, Face)>,
@@ -67,9 +66,67 @@ impl RTreeObject for Leaf {
     }
 }
 
-const DEFAULT_SOLID: [f32; 4] = [0.15, 0.55, 0.75, 1.0];
+const DEFAULT_SOLID: [f32; 4] = [0.15, 0.55, 0.75, DEFAULT_FILL_ALPHA];
 const DEFAULT_GROUP: [f32; 4] = [0.25, 0.8, 1.0, 1.0];
 const DEFAULT_LINK: [f32; 4] = [0.95, 0.85, 0.35, 1.0];
+/// A background with no fill set shows this faintly.
+pub const DEFAULT_FILL_ALPHA: f32 = 0.14;
+pub const DEFAULT_STROKE_PX: f32 = 2.0;
+/// Above this opacity a background hides what is behind it, so default text
+/// stops matching it and contrasts instead.
+const SOLID_FILL: f32 = 0.5;
+const DARK_TEXT: [f32; 4] = [0.008, 0.009, 0.012, 1.0];
+const LIGHT_TEXT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+/// An entry's colours in linear RGBA, resolved from its `doc::Paint`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Shade {
+    /// The background. Alpha is its opacity in the flat style.
+    pub fill: [f32; 4],
+    /// The border, and the whole of a line or outline.
+    pub stroke: [f32; 4],
+    /// Border width in pixels. 0 draws none.
+    pub stroke_px: f32,
+    /// Label colour in the hologram, where light only adds.
+    pub glow_text: [f32; 4],
+    /// Label colour in the flat style, legible on an opaque background.
+    pub flat_text: [f32; 4],
+}
+
+impl Shade {
+    /// Unset parts follow the fill: the border is the fill made opaque, and
+    /// the text is the border, unless the fill is opaque enough to hide it.
+    fn new(paint: doc::Paint, fill: [f32; 4]) -> Shade {
+        let fill = paint.fill.map_or(fill, to_linear);
+        let stroke = linear(paint.stroke, [fill[0], fill[1], fill[2], 1.0]);
+        let text = paint.text.map(to_linear);
+        let behind = if fill[3] < SOLID_FILL {
+            stroke
+        } else if 0.2126 * fill[0] + 0.7152 * fill[1] + 0.0722 * fill[2] > 0.25 {
+            DARK_TEXT
+        } else {
+            LIGHT_TEXT
+        };
+        Shade {
+            fill,
+            stroke,
+            stroke_px: paint.stroke_width.map_or(DEFAULT_STROKE_PX, f32::from),
+            glow_text: text.unwrap_or(stroke),
+            flat_text: text.unwrap_or(behind),
+        }
+    }
+
+    /// One colour for everything: lines, outlines, and their labels.
+    fn line(color: [f32; 4]) -> Shade {
+        Shade {
+            fill: [0.0; 4],
+            stroke: color,
+            stroke_px: DEFAULT_STROKE_PX,
+            glow_text: color,
+            flat_text: color,
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct Scene {
@@ -288,7 +345,7 @@ pub const TIP_RADIUS: f64 = 0.3;
 
 fn make(id: OccId, item: &Item<'_>, parent: Option<Slot>) -> Option<Entry> {
     let label = |l: &Option<doc::Label<'_>>| l.map(|l| (l.text.to_string(), l.face));
-    let (look, (min, max), color, label) = match item {
+    let (look, (min, max), shade, label) = match item {
         Item::Scene(_) => return None,
         Item::Shape {
             profile,
@@ -300,19 +357,19 @@ fn make(id: OccId, item: &Item<'_>, parent: Option<Slot>) -> Option<Entry> {
                 axis: *axis,
             },
             route::bounds(&solid.world),
-            linear(solid.fill, DEFAULT_SOLID),
+            Shade::new(solid.paint, DEFAULT_SOLID),
             label(&solid.label),
         ),
         Item::Group(s) => (
             Look::Group,
             route::bounds(&s.world),
-            linear(s.stroke, DEFAULT_GROUP),
+            Shade::line(linear(s.paint.stroke, DEFAULT_GROUP)),
             label(&s.label),
         ),
         Item::Text(s) => (
             Look::Text,
             route::bounds(&s.world),
-            linear(s.stroke.or(s.fill), DEFAULT_GROUP),
+            Shade::line(linear(s.paint.stroke.or(s.paint.fill), DEFAULT_GROUP)),
             label(&s.label),
         ),
         Item::Connector {
@@ -334,7 +391,7 @@ fn make(id: OccId, item: &Item<'_>, parent: Option<Slot>) -> Option<Entry> {
             (
                 Look::Connector { path, tip: *tip },
                 (lo - r, hi + r),
-                linear(*stroke, DEFAULT_LINK),
+                Shade::line(linear(*stroke, DEFAULT_LINK)),
                 label(l),
             )
         }
@@ -344,7 +401,7 @@ fn make(id: OccId, item: &Item<'_>, parent: Option<Slot>) -> Option<Entry> {
         look,
         min,
         max,
-        color,
+        shade,
         label,
         text: LayoutCache::default(),
         parent,

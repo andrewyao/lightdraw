@@ -4,17 +4,35 @@
 //! Positions are written relative to the eye, subtracted in f64 and only
 //! then cast to f32. That is the whole precision rule on the GPU side.
 
+use std::ops::Range;
+
 use glam::DVec3;
 
 use crate::camera::Camera;
 use crate::mesh;
-use crate::scene::{LINE_RADIUS, Look, Scene, TIP_RADIUS};
+use crate::scene::{Entry, LINE_RADIUS, Look, Scene, Shade, TIP_RADIUS};
 pub use crate::text::GlyphInstance;
 use crate::text::{self, Atlas, Eye};
 
 /// One instance as the vertex shader reads it: eye-relative box min, axis,
-/// box size, padding, linear RGBA.
-pub type Instance = [f32; 12];
+/// box size, border width in pixels, then linear RGBA fill and border.
+pub type Instance = [f32; 16];
+
+/// Which of `DrawList`'s arrays a run of instances lives in.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Batch {
+    /// `solids[i]`.
+    Solid(usize),
+    Line,
+    Glyph,
+}
+
+/// Consecutive instances of one batch, in paint order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub batch: Batch,
+    pub range: Range<u32>,
+}
 
 const AXIS_X: f32 = 0.0;
 const AXIS_Y: f32 = 1.0;
@@ -34,6 +52,9 @@ pub struct DrawList {
     pub bounds: Option<(DVec3, DVec3)>,
     /// Label glyphs big enough on screen to read.
     pub glyphs: Vec<GlyphInstance>,
+    /// Every instance above, back to front: each entry's body, then its
+    /// label. Styles that paint over rather than add light draw these.
+    pub runs: Vec<Run>,
     /// Every glyph the labels have needed. Kept across frames.
     pub(crate) atlas: Atlas,
 }
@@ -54,14 +75,70 @@ impl DrawList {
         }
         self.lines.clear();
         self.glyphs.clear();
+        self.runs.clear();
         self.bounds = scene.bounds();
         let eye = camera.eye();
         let frustum = camera.frustum(size);
         let view = Eye::new(camera, size);
-        for e in scene.visible(&frustum) {
+        let mut visible: Vec<&Entry> = scene.visible(&frustum).collect();
+        visible.sort_by(|a, b| {
+            a.max
+                .z
+                .total_cmp(&b.max.z)
+                .then_with(|| a.id.via.cmp(&b.id.via))
+                .then_with(|| a.id.node.cmp(&b.id.node))
+        });
+        for e in visible {
+            let lens = self.lens();
+            self.body(e, eye);
             if e.label.is_some() {
                 text::emit(&mut self.glyphs, &mut self.atlas, e, &view);
             }
+            self.mark(lens);
+        }
+    }
+
+    fn lens(&self) -> [usize; 6] {
+        let s = &self.solids;
+        [
+            s[0].len(),
+            s[1].len(),
+            s[2].len(),
+            s[3].len(),
+            self.lines.len(),
+            self.glyphs.len(),
+        ]
+    }
+
+    /// Appends a run for each batch that grew since `before`, merging with
+    /// the last run when it continues it.
+    fn mark(&mut self, before: [usize; 6]) {
+        let after = self.lens();
+        let batches = [
+            Batch::Solid(0),
+            Batch::Solid(1),
+            Batch::Solid(2),
+            Batch::Solid(3),
+            Batch::Line,
+            Batch::Glyph,
+        ];
+        for ((batch, from), to) in batches.into_iter().zip(before).zip(after) {
+            if from == to {
+                continue;
+            }
+            let range = from as u32..to as u32;
+            match self.runs.last_mut() {
+                Some(last) if last.batch == batch && last.range.end == range.start => {
+                    last.range.end = range.end;
+                }
+                _ => self.runs.push(Run { batch, range }),
+            }
+        }
+    }
+
+    fn body(&mut self, e: &Entry, eye: DVec3) {
+        let line = |c: [f32; 4]| Shade { fill: c, ..e.shade };
+        {
             match &e.look {
                 Look::Solid { profile, axis } => {
                     let axis = match axis {
@@ -73,16 +150,19 @@ impl DrawList {
                         e.min - eye,
                         axis,
                         e.max - e.min,
-                        e.color,
+                        &e.shade,
                     ));
                 }
-                Look::Group | Look::Text => outline(&mut self.lines, e.min, e.max, eye, e.color),
+                Look::Group | Look::Text => {
+                    outline(&mut self.lines, e.min, e.max, eye, &line(e.shade.stroke));
+                }
                 Look::Connector { path, tip } => {
+                    let shade = line(e.shade.stroke);
                     for w in path.windows(2) {
-                        segment(&mut self.lines, w[0], w[1], eye, e.color);
+                        segment(&mut self.lines, w[0], w[1], eye, &shade);
                     }
                     if let (doc::Tip::Arrow, [.., a, b]) = (tip, path.as_slice()) {
-                        arrowhead(&mut self.lines, *a, *b, eye, e.color);
+                        arrowhead(&mut self.lines, *a, *b, eye, &shade);
                     }
                 }
             }
@@ -90,23 +170,40 @@ impl DrawList {
     }
 }
 
-fn instance(rel_min: DVec3, axis: f32, size: DVec3, c: [f32; 4]) -> Instance {
+fn instance(rel_min: DVec3, axis: f32, size: DVec3, shade: &Shade) -> Instance {
     let m = rel_min.as_vec3();
     let s = size.as_vec3();
+    let [fr, fg, fb, fa] = shade.fill;
+    let [sr, sg, sb, sa] = shade.stroke;
     [
-        m.x, m.y, m.z, axis, s.x, s.y, s.z, 0.0, c[0], c[1], c[2], c[3],
+        m.x,
+        m.y,
+        m.z,
+        axis,
+        s.x,
+        s.y,
+        s.z,
+        shade.stroke_px,
+        fr,
+        fg,
+        fb,
+        fa,
+        sr,
+        sg,
+        sb,
+        sa,
     ]
 }
 
-fn segment(out: &mut Vec<Instance>, a: DVec3, b: DVec3, eye: DVec3, color: [f32; 4]) {
+fn segment(out: &mut Vec<Instance>, a: DVec3, b: DVec3, eye: DVec3, shade: &Shade) {
     let r = DVec3::splat(LINE_RADIUS);
     let (lo, hi) = (a.min(b) - r, a.max(b) + r);
-    out.push(instance(lo - eye, AXIS_Z, hi - lo, color));
+    out.push(instance(lo - eye, AXIS_Z, hi - lo, shade));
 }
 
 /// A stepped pyramid pointing at `b`. Instances are axis-aligned boxes, and
 /// routed paths are axis-aligned, so the head is built from widening slabs.
-fn arrowhead(out: &mut Vec<Instance>, a: DVec3, b: DVec3, eye: DVec3, color: [f32; 4]) {
+fn arrowhead(out: &mut Vec<Instance>, a: DVec3, b: DVec3, eye: DVec3, shade: &Shade) {
     const STEPS: u32 = 4;
     const LENGTH: f64 = 0.6;
     let Some(d) = (b - a).try_normalize() else {
@@ -120,12 +217,12 @@ fn arrowhead(out: &mut Vec<Instance>, a: DVec3, b: DVec3, eye: DVec3, color: [f3
         let far = near - d * step;
         let half = across * TIP_RADIUS * f64::from(k + 1) / f64::from(STEPS);
         let (lo, hi) = (near.min(far) - half, near.max(far) + half);
-        out.push(instance(lo - eye, AXIS_Z, hi - lo, color));
+        out.push(instance(lo - eye, AXIS_Z, hi - lo, shade));
     }
 }
 
 /// The twelve edges of a box.
-fn outline(out: &mut Vec<Instance>, lo: DVec3, hi: DVec3, eye: DVec3, color: [f32; 4]) {
+fn outline(out: &mut Vec<Instance>, lo: DVec3, hi: DVec3, eye: DVec3, shade: &Shade) {
     let corner = |i: usize| {
         DVec3::new(
             if i & 1 == 0 { lo.x } else { hi.x },
@@ -136,7 +233,7 @@ fn outline(out: &mut Vec<Instance>, lo: DVec3, hi: DVec3, eye: DVec3, color: [f3
     for i in 0..8 {
         for bit in [1, 2, 4] {
             if i & bit == 0 {
-                segment(out, corner(i), corner(i | bit), eye, color);
+                segment(out, corner(i), corner(i | bit), eye, shade);
             }
         }
     }

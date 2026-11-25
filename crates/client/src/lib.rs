@@ -8,3 +8,4 @@ pub mod history;
 pub mod interaction;
 pub mod look;
 pub mod overlay;
+pub mod style;

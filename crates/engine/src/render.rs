@@ -8,15 +8,20 @@
 //! bloom, scanlines, flicker, noise, and aberration, and tonemaps to the
 //! output view.
 //!
+//! The flat style keeps the scene pass, minus the projector, and replaces
+//! the post chain with a plain encode. See `Style`.
+//!
 //! Draws into any `TextureView`, so the browser surface and the offscreen
 //! path share every line here.
+
+use std::ops::Range;
 
 use doc::Rgba;
 use glam::{DVec3, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
 use crate::camera::Camera;
-use crate::encode::{DrawList, GlyphInstance, Instance};
+use crate::encode::{Batch, DrawList, GlyphInstance, Instance};
 use crate::holo::HoloParams;
 use crate::mesh;
 use crate::scene::to_linear;
@@ -55,6 +60,18 @@ const ADD: wgpu::BlendState = wgpu::BlendState {
         operation: wgpu::BlendOperation::Max,
     },
 };
+
+/// Premultiplied alpha over what is already drawn, for the flat style.
+const OVER: wgpu::BlendState = wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING;
+
+/// The flat style's pipelines: the same shaders as their hologram twins, but
+/// painting over in paint order instead of adding light.
+#[derive(Debug)]
+struct FlatPipelines {
+    face: wgpu::RenderPipeline,
+    line: wgpu::RenderPipeline,
+    glyph: wgpu::RenderPipeline,
+}
 
 #[derive(Debug)]
 struct Mesh {
@@ -98,6 +115,18 @@ pub struct Frame<'a> {
     pub holo: &'a HoloParams,
 }
 
+/// How a frame is shaded.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Style {
+    /// Projected light: rim, halos, bloom, scanlines, the projector disc
+    /// and cone, all in the look's hue family.
+    #[default]
+    Hologram,
+    /// Plain fills and lines in the documents' own colours on a neutral
+    /// grid, with no glow or screen effects. The 2D view.
+    Flat,
+}
+
 /// A remote participant's 3D cursor, drawn as a small glowing point of
 /// fixed screen size.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -118,6 +147,7 @@ pub struct Renderer {
     line: wgpu::RenderPipeline,
     marker: wgpu::RenderPipeline,
     glyph: wgpu::RenderPipeline,
+    flat: FlatPipelines,
     prefilter: wgpu::RenderPipeline,
     down: wgpu::RenderPipeline,
     up: wgpu::RenderPipeline,
@@ -134,6 +164,7 @@ pub struct Renderer {
     /// The `Atlas::version` last uploaded.
     atlas_version: u64,
     targets: Option<Targets>,
+    style: Style,
 }
 
 impl Renderer {
@@ -183,8 +214,7 @@ impl Renderer {
         });
 
         let solid_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 5 => Float32x4];
-        let instance_attrs =
-            wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4, 4 => Float32x4];
+        let instance_attrs = wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 6 => Float32x4];
         let solid_buffers = [
             Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<mesh::Vertex>() as u64,
@@ -199,54 +229,73 @@ impl Renderer {
         ];
         // Every scene draw adds light and tests depth; only the floor writes
         // it, so the volume reads through itself but not through the ground.
-        let scene_pipeline =
-            |label, vs, fs, buffers: &[Option<wgpu::VertexBufferLayout<'_>>], cull, write_depth| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(&scene_layout),
-                    vertex: wgpu::VertexState {
-                        module: &scene_shader,
-                        entry_point: Some(vs),
-                        compilation_options: Default::default(),
-                        buffers,
-                    },
-                    primitive: wgpu::PrimitiveState {
-                        cull_mode: cull,
-                        ..Default::default()
-                    },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: DEPTH_FORMAT,
-                        depth_write_enabled: Some(write_depth),
-                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    }),
-                    multisample: Default::default(),
-                    fragment: Some(wgpu::FragmentState {
-                        module: &scene_shader,
-                        entry_point: Some(fs),
-                        compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: HDR_FORMAT,
-                            blend: Some(ADD),
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            };
-        let floor = scene_pipeline("floor", "vs_floor", "fs_floor", &[], None, true);
-        let cone = scene_pipeline("cone", "vs_cone", "fs_cone", &[], None, false);
-        let face = scene_pipeline("face", "vs_solid", "fs_face", &solid_buffers, None, false);
-        let line = scene_pipeline(
-            "line",
-            "vs_solid",
-            "fs_line",
-            &solid_buffers,
-            Some(wgpu::Face::Back),
-            false,
-        );
+        let scene_pipeline = |label,
+                              vs,
+                              fs,
+                              buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                              cull,
+                              write_depth,
+                              blend| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&scene_layout),
+                vertex: wgpu::VertexState {
+                    module: &scene_shader,
+                    entry_point: Some(vs),
+                    compilation_options: Default::default(),
+                    buffers,
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: cull,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(write_depth),
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &scene_shader,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: HDR_FORMAT,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let floor = scene_pipeline("floor", "vs_floor", "fs_floor", &[], None, true, ADD);
+        let cone = scene_pipeline("cone", "vs_cone", "fs_cone", &[], None, false, ADD);
+        let face_with = |blend| {
+            scene_pipeline(
+                "face",
+                "vs_solid",
+                "fs_face",
+                &solid_buffers,
+                None,
+                false,
+                blend,
+            )
+        };
+        let line_with = |blend| {
+            scene_pipeline(
+                "line",
+                "vs_solid",
+                "fs_line",
+                &solid_buffers,
+                Some(wgpu::Face::Back),
+                false,
+                blend,
+            )
+        };
+        let (face, line) = (face_with(ADD), line_with(ADD));
         let marker_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
         let marker = scene_pipeline(
             "marker",
@@ -259,6 +308,7 @@ impl Renderer {
             })],
             None,
             false,
+            ADD,
         );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -319,49 +369,57 @@ impl Renderer {
             ],
         });
         let glyph_attrs = wgpu::vertex_attr_array![
-            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4,
+            5 => Float32x4
         ];
-        let glyph = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let glyph_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("glyph"),
-            layout: Some(
-                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("glyph"),
-                    bind_group_layouts: &[Some(&globals_layout), Some(&atlas_layout)],
-                    immediate_size: 0,
-                }),
-            ),
-            vertex: wgpu::VertexState {
-                module: &scene_shader,
-                entry_point: Some("vs_glyph"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: GLYPH_BYTES,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &glyph_attrs,
-                })],
-            },
-            primitive: Default::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &scene_shader,
-                entry_point: Some("fs_glyph"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: HDR_FORMAT,
-                    blend: Some(ADD),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
+            bind_group_layouts: &[Some(&globals_layout), Some(&atlas_layout)],
+            immediate_size: 0,
         });
+        let glyph_with = |blend| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("glyph"),
+                layout: Some(&glyph_layout),
+                vertex: wgpu::VertexState {
+                    module: &scene_shader,
+                    entry_point: Some("vs_glyph"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: GLYPH_BYTES,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &glyph_attrs,
+                    })],
+                },
+                primitive: Default::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &scene_shader,
+                    entry_point: Some("fs_glyph"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: HDR_FORMAT,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let glyph = glyph_with(ADD);
+        let flat = FlatPipelines {
+            face: face_with(OVER),
+            line: line_with(OVER),
+            glyph: glyph_with(OVER),
+        };
 
         let texture = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -465,6 +523,7 @@ impl Renderer {
             line,
             marker,
             glyph,
+            flat,
             prefilter,
             down,
             up,
@@ -480,7 +539,13 @@ impl Renderer {
             atlas_group,
             atlas_version: 0,
             targets: None,
+            style: Style::default(),
         }
+    }
+
+    /// The style every later frame draws in.
+    pub fn set_style(&mut self, style: Style) {
+        self.style = style;
     }
 
     /// The cursors every later frame draws, replacing the last set.
@@ -504,7 +569,7 @@ impl Renderer {
         if self.targets.as_ref().is_none_or(|t| t.size != size) {
             self.targets = Some(self.make_targets(device, size));
         }
-        queue.write_buffer(&self.globals, 0, &globals(frame, size));
+        queue.write_buffer(&self.globals, 0, &globals(frame, size, self.style));
 
         // One upload: each profile's instances, then the lines.
         self.staging.clear();
@@ -587,28 +652,34 @@ impl Renderer {
             pass.set_bind_group(0, &self.globals_group, &[]);
             pass.set_pipeline(&self.floor);
             pass.draw(0..6, 0..1);
-            if list.bounds.is_some() {
+            if list.bounds.is_some() && self.style == Style::Hologram {
                 pass.set_pipeline(&self.cone);
                 pass.draw(0..CONE_VERTICES, 0..1);
             }
-            pass.set_vertex_buffer(1, self.instances.slice(..));
-            // Lines use the rect mesh.
-            let draws = [0, 1, 2, 3, 0].into_iter().enumerate();
-            for ((i, m), range) in draws.zip(ranges) {
-                if range.is_empty() {
-                    continue;
+            match self.style {
+                Style::Hologram => {
+                    // Light adds, so batch order is free: each batch whole.
+                    let runs = (0..4)
+                        .map(Batch::Solid)
+                        .chain([Batch::Line])
+                        .zip(&ranges)
+                        .map(|(batch, r)| (batch, r.clone()))
+                        .chain([(Batch::Glyph, 0..list.glyphs.len() as u32)]);
+                    for (batch, range) in runs {
+                        self.draw_run(&mut pass, batch, range, false);
+                    }
                 }
-                pass.set_pipeline(if i < 4 { &self.face } else { &self.line });
-                let mesh = &self.meshes[m];
-                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(0..mesh.count, 0, range);
-            }
-            if !list.glyphs.is_empty() {
-                pass.set_pipeline(&self.glyph);
-                pass.set_bind_group(1, &self.atlas_group, &[]);
-                pass.set_vertex_buffer(0, self.glyphs.slice(..));
-                pass.draw(0..6, 0..list.glyphs.len() as u32);
+                Style::Flat => {
+                    for run in &list.runs {
+                        let base = match run.batch {
+                            Batch::Solid(i) => ranges[i].start,
+                            Batch::Line => ranges[4].start,
+                            Batch::Glyph => 0,
+                        };
+                        let range = run.range.start + base..run.range.end + base;
+                        self.draw_run(&mut pass, run.batch, range, true);
+                    }
+                }
             }
             if !markers.is_empty() {
                 pass.set_pipeline(&self.marker);
@@ -641,7 +712,12 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         };
         let clear = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
-        for (i, level) in t.bloom.iter().enumerate() {
+        let bloom = if self.style == Style::Hologram {
+            &t.bloom[..]
+        } else {
+            &[]
+        };
+        for (i, level) in bloom.iter().enumerate() {
             let pipeline = if i == 0 { &self.prefilter } else { &self.down };
             post_pass(
                 encoder,
@@ -652,7 +728,7 @@ impl Renderer {
                 &level.down,
             );
         }
-        for level in t.bloom.iter().rev() {
+        for level in bloom.iter().rev() {
             if let Some(up) = &level.up {
                 let load = wgpu::LoadOp::Load;
                 post_pass(encoder, "bloom up", &level.view, load, &self.up, up);
@@ -666,6 +742,46 @@ impl Renderer {
             &self.composite,
             &t.composite,
         );
+    }
+
+    /// One batch's instances in `range`, offset into the shared buffers.
+    fn draw_run(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        batch: Batch,
+        range: Range<u32>,
+        flat: bool,
+    ) {
+        if range.is_empty() {
+            return;
+        }
+        let (face, line, glyph) = if flat {
+            (&self.flat.face, &self.flat.line, &self.flat.glyph)
+        } else {
+            (&self.face, &self.line, &self.glyph)
+        };
+        let mesh = match batch {
+            Batch::Glyph => {
+                pass.set_pipeline(glyph);
+                pass.set_bind_group(1, &self.atlas_group, &[]);
+                pass.set_vertex_buffer(0, self.glyphs.slice(..));
+                pass.draw(0..6, range);
+                return;
+            }
+            Batch::Solid(i) => {
+                pass.set_pipeline(face);
+                &self.meshes[i]
+            }
+            // Lines use the rect mesh.
+            Batch::Line => {
+                pass.set_pipeline(line);
+                &self.meshes[0]
+            }
+        };
+        pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+        pass.set_vertex_buffer(1, self.instances.slice(..));
+        pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..mesh.count, 0, range);
     }
 
     fn make_targets(&self, device: &wgpu::Device, size: [u32; 2]) -> Targets {
@@ -778,7 +894,7 @@ fn marker_buffer(device: &wgpu::Device, count: u64) -> wgpu::Buffer {
 /// to 10 cells so major lines stay put, and sized to the view distance. The
 /// projector sits on the ground under the page's bounds, wide enough to hold
 /// them, and its cone rises a little past the tallest thing on it.
-fn globals(frame: Frame<'_>, size: [u32; 2]) -> Vec<u8> {
+fn globals(frame: Frame<'_>, size: [u32; 2], style: Style) -> Vec<u8> {
     let camera = frame.camera;
     let eye = camera.eye();
     let centre = (eye / 10.0).floor() * 10.0 * DVec3::new(1.0, 1.0, 0.0);
@@ -802,7 +918,8 @@ fn globals(frame: Frame<'_>, size: [u32; 2]) -> Vec<u8> {
     out.extend_from_slice(bytemuck::cast_slice(&grid.to_array()));
     let stage = Vec4::from(((stage - eye).as_vec3(), radius as f32));
     out.extend_from_slice(bytemuck::cast_slice(&stage.to_array()));
-    out.extend_from_slice(bytemuck::cast_slice(&[height as f32, 0.0, 0.0, 0.0]));
+    let flat = f32::from(u8::from(style == Style::Flat));
+    out.extend_from_slice(bytemuck::cast_slice(&[height as f32, 0.0, flat, 0.0]));
     out.extend_from_slice(bytemuck::bytes_of(frame.holo));
     debug_assert_eq!(out.len(), GLOBALS_BYTES);
     out

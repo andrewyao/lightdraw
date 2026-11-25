@@ -28,5 +28,7 @@ pub use model::{
     PropKey, Rgba, Tip, Write,
 };
 pub use replica::{BatchNo, Edit, Presence, Presenting, Rejected, Replica, Update, WorkPlane};
-pub use resolve::{Body, Camera, End, Item, Label, Node, OccId, Occurrence, Occurrences, Solid};
+pub use resolve::{
+    Body, Camera, End, Item, Label, Node, OccId, Occurrence, Occurrences, Paint, Solid,
+};
 pub use wire::{Frame, WireError};

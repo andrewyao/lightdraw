@@ -4,7 +4,7 @@
 use doc::library::ComponentDef;
 use doc::{Axis, Profile};
 use engine::demo::{self, Builder};
-use engine::{Camera, HoloParams, render_rgba};
+use engine::{Camera, HoloParams, Projection, render_rgba};
 use glam::DVec3;
 
 const SIZE: [u32; 2] = [640, 400];
@@ -69,6 +69,7 @@ fn side_camera(target: DVec3) -> Camera {
         pitch: 0.15,
         distance: 24.0,
         fov_y: 50f64.to_radians(),
+        projection: Projection::Perspective,
     }
 }
 
@@ -301,6 +302,7 @@ fn above(distance: f64) -> Camera {
         pitch: 0.9,
         distance,
         fov_y: 50f64.to_radians(),
+        projection: Projection::Perspective,
     }
 }
 
@@ -332,5 +334,151 @@ fn a_label_too_small_to_read_is_not_drawn() {
     assert_eq!(
         text_light(None, PosZ, far),
         text_light(Some(PosZ), PosZ, far)
+    );
+}
+
+/// Straight down onto the ground, orthographic, in the flat style.
+fn flat_shot(b: &Builder, distance: f64) -> Shot {
+    let page = b.doc().children(doc::NodeId::ROOT).next().unwrap();
+    let scene = engine::Scene::build(b.doc(), page);
+    let camera = Camera {
+        target: DVec3::ZERO,
+        yaw: -std::f64::consts::FRAC_PI_2,
+        pitch: std::f64::consts::FRAC_PI_2,
+        distance,
+        projection: Projection::Orthographic,
+        ..Camera::default()
+    };
+    let mut off = engine::Offscreen::new(SIZE).unwrap();
+    let mut list = engine::DrawList::default();
+    list.encode(&scene, &camera, SIZE);
+    off.set_style(engine::Style::Flat);
+    off.draw(&list, &camera, &HoloParams::default());
+    Shot {
+        px: off.read(),
+        camera,
+    }
+}
+
+#[test]
+fn the_flat_style_draws_own_colours_without_glow() {
+    let mut b = Builder::new();
+    let page = b.page();
+    let yellow = [255, 210, 40, 40];
+    b.shape(page, Profile::Rect, Axis::Z, [-4, -1, 0], [2, 2, 1], yellow);
+    b.shape(
+        page,
+        Profile::Rect,
+        Axis::Z,
+        [1, -1, 0],
+        [2, 2, 1],
+        [40, 200, 255, 40],
+    );
+    let shot = flat_shot(&b, 12.0);
+
+    let [r, g, bl] = shot.rgb(DVec3::new(-3.0, 0.0, 1.0));
+    assert!(
+        r > bl + 40 && g > bl + 30,
+        "a yellow fill stays yellow: {:?}",
+        [r, g, bl]
+    );
+    let luma = |p: DVec3| shot.rgb(p).iter().map(|&c| f64::from(c)).sum::<f64>() / 3.0;
+    let edge = luma(DVec3::new(1.02, 0.0, 1.0));
+    let fill = luma(DVec3::new(2.0, 0.0, 1.0));
+    assert!(edge > fill + 60.0, "a crisp outline: {edge} over {fill}");
+    let ground = shot.luma(DVec3::new(-0.5, 4.5, 0.0));
+    assert!(ground < 20.0, "no projector disc or cone: {ground}");
+    let beside = shot.luma(DVec3::new(0.6, 0.5, 0.0));
+    assert!(
+        (beside - ground).abs() < 2.0,
+        "no bloom or halo past the edge: {beside} by {ground}"
+    );
+}
+
+#[test]
+fn a_flat_view_zoomed_in_still_draws_shapes_taller_than_the_zoom() {
+    let mut b = Builder::new();
+    let page = b.page();
+    b.shape(
+        page,
+        Profile::Rect,
+        Axis::Z,
+        [-1, -1, 0],
+        [2, 2, 40],
+        [40, 200, 255, 255],
+    );
+    let shot = flat_shot(&b, 3.0);
+    let [r, g, bl] = shot.rgb(DVec3::new(-0.99, 0.0, 40.0));
+    assert!(
+        bl > 150 && g > 100 && r < 100,
+        "the roof's outline shows: {:?}",
+        [r, g, bl]
+    );
+}
+
+#[test]
+fn a_styled_shape_paints_its_fill_border_and_text_over_what_is_below() {
+    use doc::{Attr, Change, Face, Rgba};
+    let mut b = Builder::new();
+    let page = b.page();
+    let below = b.shape(
+        page,
+        Profile::Rect,
+        Axis::Z,
+        [-5, -2, 0],
+        [6, 4, 0],
+        [40, 200, 255, 60],
+    );
+    b.label(below, "UNDER", Face::PosZ);
+    let above = b.shape(
+        page,
+        Profile::Rect,
+        Axis::Z,
+        [-2, -3, 0],
+        [8, 6, 0],
+        [255, 255, 255, 255],
+    );
+    b.edit(vec![
+        Change::set(above, Attr::Stroke(Rgba([0, 0, 0, 255]))),
+        Change::set(above, Attr::StrokeWidth(5)),
+        Change::set(above, Attr::TextColor(Rgba([200, 20, 20, 255]))),
+    ]);
+    b.label(above, "OVER", Face::PosZ);
+    let shot = flat_shot(&b, 8.0);
+
+    let [r, g, bl] = shot.rgb(DVec3::new(0.0, -2.0, 0.0));
+    assert!(
+        r > 230 && g > 230 && bl > 230,
+        "an opaque white fill hides the shape below: {:?}",
+        [r, g, bl]
+    );
+    let [r, g, bl] = shot.rgb(DVec3::new(-1.96, -2.0, 0.0));
+    assert!(
+        r < 40 && g < 40 && bl < 40,
+        "a thick black border inside the edge: {:?}",
+        [r, g, bl]
+    );
+
+    let [lo, hi] = [
+        shot.camera
+            .project(DVec3::new(-1.0, -1.0, 0.0), SIZE)
+            .unwrap(),
+        shot.camera
+            .project(DVec3::new(5.0, 2.0, 0.0), SIZE)
+            .unwrap(),
+    ];
+    let mut red = 0;
+    for y in hi[1] as usize..lo[1] as usize {
+        for x in lo[0] as usize..hi[0] as usize {
+            let i = (y * SIZE[0] as usize + x) * 4;
+            let [r, g, b] = [shot.px[i], shot.px[i + 1], shot.px[i + 2]];
+            if r > 120 && g < 90 && b < 90 {
+                red += 1;
+            }
+        }
+    }
+    assert!(
+        red > 40,
+        "the label draws in its red text colour: {red} pixels"
     );
 }

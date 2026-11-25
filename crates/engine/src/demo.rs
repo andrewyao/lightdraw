@@ -8,7 +8,7 @@
 use doc::library::ComponentDef;
 use glam::DVec3;
 
-use crate::camera::Camera;
+use crate::camera::{Camera, Projection};
 use doc::{
     Attr, Authority, Axis, Cell, CellVec, Change, Dirty, Doc, Endpoint, Extent, Face, Intrinsic,
     Kind, NodeId, Position, Profile, Replica, Rgba,
@@ -153,6 +153,7 @@ pub fn showcase_camera() -> Camera {
         pitch: 0.6,
         distance: 38.0,
         fov_y: 50f64.to_radians(),
+        projection: Projection::Perspective,
     }
 }
 

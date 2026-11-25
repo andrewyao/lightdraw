@@ -321,6 +321,8 @@ registers! {
         Fill(Rgba),
         Stroke(Rgba),
         Tip(Tip),
+        TextColor(Rgba),
+        StrokeWidth(u8),
     }
 }
 

@@ -19,6 +19,8 @@ use engine::camera::{Ray, View};
 use engine::pick::{Hit, on_plane};
 use glam::DVec3;
 
+use crate::camera::Dimension;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Tool {
     Select,
@@ -66,7 +68,46 @@ pub struct Pointer {
     pub gizmo: Option<(Axis, DVec3)>,
     /// The connector under the pointer. `pick` skips connectors.
     pub link: Option<NodeId>,
+    /// The resize handle under the pointer.
+    pub handle: Option<Handle>,
     pub mods: Mods,
+}
+
+/// A corner of a box's footprint: on the high side of X, and of Y, or not.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Corner {
+    pub high_x: bool,
+    pub high_y: bool,
+}
+
+impl Corner {
+    pub const ALL: [Corner; 4] = [
+        Corner {
+            high_x: false,
+            high_y: false,
+        },
+        Corner {
+            high_x: true,
+            high_y: false,
+        },
+        Corner {
+            high_x: true,
+            high_y: true,
+        },
+        Corner {
+            high_x: false,
+            high_y: true,
+        },
+    ];
+}
+
+/// A resize handle: one corner of a selected node's footprint, at `at` in
+/// the world.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Handle {
+    pub node: NodeId,
+    pub corner: Corner,
+    pub at: DVec3,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -142,6 +183,8 @@ pub enum Command {
     Camera(CamOp),
     Undo,
     Redo,
+    /// Hand the pointer to this tool. Sent after a creation finishes.
+    UseTool(Tool),
 }
 
 /// What a drag moves: each node with its parent-relative box at the start.
@@ -181,6 +224,14 @@ pub enum Mode {
     GizmoDrag {
         axis: Axis,
         grab: Grab,
+    },
+    /// Drags one corner of `handle.node`'s footprint; the opposite corner
+    /// stays put.
+    Resizing {
+        handle: Handle,
+        start: CellBox,
+        /// Cells the corner has moved along X and Y, as written.
+        delta: [i32; 2],
     },
     Connecting {
         tip: Tip,
@@ -230,6 +281,8 @@ pub struct Ctx<'a> {
     pub doc: &'a Doc,
     /// Prototype B: the work plane is fixed to the active floor.
     pub locked: Option<WorkPlane>,
+    /// 2D has no orbit, axis views, push/pull, or moves off the ground plane.
+    pub dimension: Dimension,
 }
 
 const ORBIT_PER_PX: f64 = 0.006;
@@ -251,7 +304,10 @@ pub fn step(state: State, event: Event, tool: Tool, cx: Ctx) -> (State, Vec<Comm
             mode
         }
 
-        (Mode::Idle, Event::Down(Button::Secondary, p)) => Mode::Orbiting { last: p.px },
+        (Mode::Idle, Event::Down(Button::Secondary, p)) => match cx.dimension {
+            Dimension::Two => Mode::Panning { last: p.px },
+            Dimension::Three => Mode::Orbiting { last: p.px },
+        },
         (Mode::Idle, Event::Down(Button::Middle, p)) => Mode::Panning { last: p.px },
         (Mode::Idle, Event::Down(Button::Primary, p)) if p.mods.space => {
             Mode::Panning { last: p.px }
@@ -267,6 +323,7 @@ pub fn step(state: State, event: Event, tool: Tool, cx: Ctx) -> (State, Vec<Comm
                     plane = work_plane(&p, cx);
                     if let Some((_, at)) = on_plane(&p.ray, &plane) {
                         out.push(Command::Doc(place(what, plane.normal, at)));
+                        out.push(Command::UseTool(Tool::Select));
                     }
                     Mode::Idle
                 }
@@ -322,6 +379,7 @@ pub fn step(state: State, event: Event, tool: Tool, cx: Ctx) -> (State, Vec<Comm
                 axis: normal_axis(on.normal),
                 bounds: drawn(on.normal, from, to),
             }));
+            out.push(Command::UseTool(Tool::Select));
             Mode::Idle
         }
 
@@ -385,7 +443,27 @@ pub fn step(state: State, event: Event, tool: Tool, cx: Ctx) -> (State, Vec<Comm
             }
             Mode::Idle
         }
-        (Mode::PushPull { .. } | Mode::GizmoDrag { .. }, Event::Up(_)) => Mode::Idle,
+        (
+            Mode::Resizing {
+                handle,
+                start,
+                delta,
+            },
+            Event::Move(p),
+        ) => {
+            let now = corner_offset(&p.ray, handle, start).unwrap_or(delta);
+            if now != delta {
+                out.push(Command::Doc(DocOp::Set(resized(handle, start, now))));
+            }
+            Mode::Resizing {
+                handle,
+                start,
+                delta: now,
+            }
+        }
+        (Mode::PushPull { .. } | Mode::GizmoDrag { .. } | Mode::Resizing { .. }, Event::Up(_)) => {
+            Mode::Idle
+        }
 
         (
             Mode::Connecting {
@@ -406,6 +484,7 @@ pub fn step(state: State, event: Event, tool: Tool, cx: Ctx) -> (State, Vec<Comm
             let (to, _) = endpoint(&p, cx, &plane);
             if to != from {
                 out.push(Command::Doc(DocOp::Connect { from, to, tip }));
+                out.push(Command::UseTool(Tool::Select));
             }
             Mode::Idle
         }
@@ -441,7 +520,9 @@ pub fn step(state: State, event: Event, tool: Tool, cx: Ctx) -> (State, Vec<Comm
             out.push(Command::Redo);
             Mode::Idle
         }
-        (mode, Event::Key(Key::View(v))) if !matches!(mode, Mode::EditingText { .. }) => {
+        (mode, Event::Key(Key::View(v)))
+            if cx.dimension == Dimension::Three && !matches!(mode, Mode::EditingText { .. }) =>
+        {
             out.push(Command::Camera(CamOp::Snap(v)));
             mode
         }
@@ -487,7 +568,9 @@ fn press(
             }
         }
         Tool::PushPull => {
-            let Some(hit) = p.hit else { return Mode::Idle };
+            let Some(hit) = p.hit.filter(|_| cx.dimension == Dimension::Three) else {
+                return Mode::Idle;
+            };
             let node = hit.id.selects();
             let (Some(face), Some(start)) = (hit.face(), sized_box(cx.doc, node)) else {
                 return Mode::Idle;
@@ -512,6 +595,15 @@ fn press(
             }
         }
         Tool::Select => {
+            if let Some(handle) = p.handle.filter(|h| selection[..] == [h.node])
+                && let Some(start) = sized_box(cx.doc, handle.node)
+            {
+                return Mode::Resizing {
+                    handle,
+                    start,
+                    delta: [0, 0],
+                };
+            }
             if let Some((axis, origin)) = p.gizmo.filter(|_| !selection.is_empty()) {
                 let dir = axis_dir(axis);
                 let at = origin + dir * along(&p.ray, origin, dir).unwrap_or(0.0);
@@ -534,7 +626,7 @@ fn press(
                 }
                 return Mode::Dragging {
                     grab: grab(cx.doc, selection, hit.point),
-                    normal: p.mods.shift,
+                    normal: p.mods.shift && cx.dimension == Dimension::Three,
                     toggle: (was && p.mods.shift).then_some(node),
                 };
             }
@@ -557,10 +649,11 @@ fn press(
 }
 
 /// The plane a new shape lands on: the floor lock, else the face under the
-/// pointer, else the ground.
+/// pointer, else the ground. 2D only lands on faces looking up.
 fn work_plane(p: &Pointer, cx: Ctx) -> WorkPlane {
+    let flat = |w: &WorkPlane| cx.dimension == Dimension::Three || w.normal == Face::PosZ;
     cx.locked
-        .or_else(|| p.hit.as_ref().and_then(face_plane))
+        .or_else(|| p.hit.as_ref().and_then(face_plane).filter(flat))
         .unwrap_or(GROUND)
 }
 
@@ -581,6 +674,7 @@ fn place(what: Placed, normal: Face, at: CellVec) -> DocOp {
 fn wrote(mode: &Mode) -> bool {
     match mode {
         Mode::PushPull { delta, .. } => *delta != 0,
+        Mode::Resizing { delta, .. } => *delta != [0, 0],
         Mode::Dragging { grab, .. } | Mode::GizmoDrag { grab, .. } => {
             grab.delta != CellVec::default()
         }
@@ -632,7 +726,7 @@ pub fn local_box(doc: &Doc, node: NodeId) -> Option<CellBox> {
 }
 
 /// Parent-relative box of a node whose size is its own to change.
-fn sized_box(doc: &Doc, node: NodeId) -> Option<CellBox> {
+pub fn sized_box(doc: &Doc, node: NodeId) -> Option<CellBox> {
     match doc.node(node)? {
         Node::Frame(b) | Node::Text(b) | Node::Component(b) | Node::Shape { body: b, .. } => {
             Some(b.bounds)
@@ -752,6 +846,46 @@ fn pulled(node: NodeId, face: Face, start: CellBox, delta: i32) -> Vec<Change> {
         ));
     }
     out
+}
+
+/// Whole cells the pointer has carried `handle`'s corner across the
+/// horizontal plane through it, held so neither side shrinks below a cell.
+fn corner_offset(ray: &Ray, handle: Handle, start: CellBox) -> Option<[i32; 2]> {
+    if ray.dir.z.abs() < 1e-9 {
+        return None;
+    }
+    let t = (handle.at.z - ray.origin.z) / ray.dir.z;
+    let d = ray.at(t) - handle.at;
+    let clamp = |v: f64, size: u32, high: bool| {
+        let v = v.round() as i32;
+        let room = size as i32 - 1;
+        if high { v.max(-room) } else { v.min(room) }
+    };
+    Some([
+        clamp(d.x, start.w.0, handle.corner.high_x),
+        clamp(d.y, start.h.0, handle.corner.high_y),
+    ])
+}
+
+/// Resize writes: a high corner grows the extent; a low corner moves the min
+/// and shrinks the extent, so the opposite corner stays put.
+fn resized(handle: Handle, start: CellBox, [dx, dy]: [i32; 2]) -> Vec<Change> {
+    let node = handle.node;
+    let side = |min: Cell, size: Extent, d: i32, high: bool| {
+        if high {
+            (min, Extent(size.0.saturating_add_signed(d)))
+        } else {
+            (Cell(min.0 + d), Extent(size.0.saturating_add_signed(-d)))
+        }
+    };
+    let (x, w) = side(start.min.x, start.w, dx, handle.corner.high_x);
+    let (y, h) = side(start.min.y, start.h, dy, handle.corner.high_y);
+    vec![
+        Change::set(node, Attr::X(x)),
+        Change::set(node, Attr::Y(y)),
+        Change::set(node, Attr::W(w)),
+        Change::set(node, Attr::H(h)),
+    ]
 }
 
 fn extent(b: CellBox, k: usize) -> u32 {
@@ -923,6 +1057,7 @@ mod tests {
             hit: None,
             gizmo: None,
             link: None,
+            handle: None,
             mods: Mods::default(),
         }
     }
@@ -941,9 +1076,20 @@ mod tests {
     }
 
     fn run(b: &Builder, tool: Tool, state: State, events: Vec<Event>) -> (State, Vec<Command>) {
+        run_in(Dimension::Three, b, tool, state, events)
+    }
+
+    fn run_in(
+        dimension: Dimension,
+        b: &Builder,
+        tool: Tool,
+        state: State,
+        events: Vec<Event>,
+    ) -> (State, Vec<Command>) {
         let cx = Ctx {
             doc: b.doc(),
             locked: None,
+            dimension,
         };
         events
             .into_iter()
@@ -985,16 +1131,19 @@ mod tests {
         assert_eq!(s.mode, Mode::Idle);
         assert_eq!(
             cmds,
-            vec![Command::Doc(DocOp::Create {
-                profile: Profile::Rect,
-                axis: Axis::Z,
-                bounds: CellBox {
-                    min: CellVec::new(1, 2, 0),
-                    w: Extent(4),
-                    h: Extent(4),
-                    d: Extent(0),
-                },
-            })]
+            vec![
+                Command::Doc(DocOp::Create {
+                    profile: Profile::Rect,
+                    axis: Axis::Z,
+                    bounds: CellBox {
+                        min: CellVec::new(1, 2, 0),
+                        w: Extent(4),
+                        h: Extent(4),
+                        d: Extent(0),
+                    },
+                }),
+                Command::UseTool(Tool::Select)
+            ]
         );
 
         let mut b = Builder::new();
@@ -1041,16 +1190,19 @@ mod tests {
         assert_eq!(s.plane.normal, Face::PosX);
         assert_eq!(
             cmds,
-            vec![Command::Doc(DocOp::Create {
-                profile: Profile::Ellipse,
-                axis: Axis::X,
-                bounds: CellBox {
-                    min: CellVec::new(3, 0, 0),
-                    w: Extent(0),
-                    h: Extent(2),
-                    d: Extent(3),
-                },
-            })]
+            vec![
+                Command::Doc(DocOp::Create {
+                    profile: Profile::Ellipse,
+                    axis: Axis::X,
+                    bounds: CellBox {
+                        min: CellVec::new(3, 0, 0),
+                        w: Extent(0),
+                        h: Extent(2),
+                        d: Extent(3),
+                    },
+                }),
+                Command::UseTool(Tool::Select)
+            ]
         );
     }
 
@@ -1260,11 +1412,14 @@ mod tests {
         assert_eq!(s.mode, Mode::Idle);
         assert_eq!(
             cmds,
-            vec![Command::Doc(DocOp::Connect {
-                from: Endpoint::Node(a),
-                to: Endpoint::Node(c),
-                tip: Tip::Arrow,
-            })]
+            vec![
+                Command::Doc(DocOp::Connect {
+                    from: Endpoint::Node(a),
+                    to: Endpoint::Node(c),
+                    tip: Tip::Arrow,
+                }),
+                Command::UseTool(Tool::Select)
+            ]
         );
     }
 
@@ -1286,11 +1441,14 @@ mod tests {
         );
         assert_eq!(
             cmds,
-            vec![Command::Doc(DocOp::Connect {
-                from: Endpoint::Node(a),
-                to: Endpoint::Free(CellVec::new(7, 3, 0)),
-                tip: Tip::Arrow,
-            })]
+            vec![
+                Command::Doc(DocOp::Connect {
+                    from: Endpoint::Node(a),
+                    to: Endpoint::Free(CellVec::new(7, 3, 0)),
+                    tip: Tip::Arrow,
+                }),
+                Command::UseTool(Tool::Select)
+            ]
         );
     }
 
@@ -1308,11 +1466,14 @@ mod tests {
         );
         assert_eq!(
             cmds,
-            vec![Command::Doc(DocOp::Connect {
-                from: Endpoint::Free(CellVec::new(0, 0, 0)),
-                to: Endpoint::Free(CellVec::new(5, 0, 0)),
-                tip: Tip::None,
-            })]
+            vec![
+                Command::Doc(DocOp::Connect {
+                    from: Endpoint::Free(CellVec::new(0, 0, 0)),
+                    to: Endpoint::Free(CellVec::new(5, 0, 0)),
+                    tip: Tip::None,
+                }),
+                Command::UseTool(Tool::Select)
+            ]
         );
     }
 
@@ -1336,16 +1497,19 @@ mod tests {
             );
             assert_eq!(
                 cmds,
-                vec![Command::Doc(DocOp::Place {
-                    what,
-                    bounds: CellBox {
-                        min: CellVec::new(2, 3, 0),
-                        w: Extent(w),
-                        h: Extent(h),
-                        d: Extent(0),
-                    },
-                    face: Face::PosZ,
-                })]
+                vec![
+                    Command::Doc(DocOp::Place {
+                        what,
+                        bounds: CellBox {
+                            min: CellVec::new(2, 3, 0),
+                            w: Extent(w),
+                            h: Extent(h),
+                            d: Extent(0),
+                        },
+                        face: Face::PosZ,
+                    }),
+                    Command::UseTool(Tool::Select)
+                ]
             );
         }
     }
@@ -1509,5 +1673,210 @@ mod tests {
             cmds[..],
             [Command::Camera(CamOp::Orbit { yaw, pitch })] if yaw < 0.0 && pitch == 0.0
         ));
+    }
+
+    #[test]
+    fn in_2d_right_drag_pans_and_the_axis_views_do_nothing() {
+        let b = Builder::new();
+        let (s, cmds) = run_in(
+            Dimension::Two,
+            &b,
+            Tool::Select,
+            State::default(),
+            vec![
+                Event::Down(Button::Secondary, above(0.0, 0.0)),
+                Event::Move(above(1.0, 0.0)),
+                Event::Up(above(1.0, 0.0)),
+                Event::Key(Key::View(View::Front)),
+            ],
+        );
+        assert_eq!(s.mode, Mode::Idle);
+        assert!(
+            matches!(cmds[..], [Command::Camera(CamOp::Pan(_))]),
+            "{cmds:?}"
+        );
+    }
+
+    #[test]
+    fn in_2d_push_pull_writes_nothing() {
+        let mut b = Builder::new();
+        let tile = boxed(&mut b, [0, 0, 0], [2, 2, 0]);
+        let down = hitting(above(1.0, 1.0), tile, DVec3::Z, [1.0, 1.0, 0.0]);
+        let (s, cmds) = run_in(
+            Dimension::Two,
+            &b,
+            Tool::PushPull,
+            State::default(),
+            vec![
+                Event::Down(Button::Primary, down),
+                Event::Move(above(1.0, 4.0)),
+                Event::Up(above(1.0, 4.0)),
+            ],
+        );
+        assert_eq!(s.mode, Mode::Idle);
+        assert!(cmds.is_empty(), "{cmds:?}");
+    }
+
+    #[test]
+    fn in_2d_shift_drag_slides_on_the_ground() {
+        let mut b = Builder::new();
+        let block = boxed(&mut b, [4, 4, 0], [2, 2, 2]);
+        let shifted = |x: f64, y: f64| Pointer {
+            mods: Mods {
+                shift: true,
+                space: false,
+            },
+            ..above(x, y)
+        };
+        let down = hitting(shifted(5.0, 5.0), block, DVec3::Z, [5.0, 5.0, 2.0]);
+        let (_, cmds) = run_in(
+            Dimension::Two,
+            &b,
+            Tool::Select,
+            State::default(),
+            vec![
+                Event::Down(Button::Primary, down),
+                Event::Move(shifted(8.0, 5.0)),
+                Event::Up(shifted(8.0, 5.0)),
+            ],
+        );
+        assert_eq!(
+            sets(&cmds),
+            vec![vec![
+                Change::set(block, Attr::X(Cell(7))),
+                Change::set(block, Attr::Y(Cell(4))),
+                Change::set(block, Attr::Z(Cell(0))),
+            ]]
+        );
+    }
+
+    #[test]
+    fn in_2d_drawing_on_a_side_face_lands_on_the_ground() {
+        let mut b = Builder::new();
+        let block = boxed(&mut b, [0, 0, 0], [3, 3, 3]);
+        let down = hitting(above(3.0, 1.0), block, DVec3::X, [3.0, 1.0, 1.0]);
+        let (s, _) = run_in(
+            Dimension::Two,
+            &b,
+            Tool::Draw(Profile::Rect),
+            State::default(),
+            vec![Event::Down(Button::Primary, down)],
+        );
+        assert_eq!(s.plane, GROUND);
+    }
+
+    fn resize(
+        b: &Builder,
+        node: NodeId,
+        corner: Corner,
+        at: [f64; 2],
+        to: [f64; 2],
+    ) -> Vec<Command> {
+        let handle = Handle {
+            node,
+            corner,
+            at: DVec3::new(at[0], at[1], 0.0),
+        };
+        let down = Pointer {
+            handle: Some(handle),
+            ..above(at[0], at[1])
+        };
+        let state = State {
+            selection: vec![node],
+            ..State::default()
+        };
+        let (s, cmds) = run_in(
+            Dimension::Two,
+            b,
+            Tool::Select,
+            state,
+            vec![
+                Event::Down(Button::Primary, down),
+                Event::Move(above(to[0], to[1])),
+                Event::Up(above(to[0], to[1])),
+            ],
+        );
+        assert_eq!(s.mode, Mode::Idle);
+        cmds
+    }
+
+    fn footprint(x: i32, y: i32, w: u32, h: u32, node: NodeId) -> Vec<Change> {
+        vec![
+            Change::set(node, Attr::X(Cell(x))),
+            Change::set(node, Attr::Y(Cell(y))),
+            Change::set(node, Attr::W(Extent(w))),
+            Change::set(node, Attr::H(Extent(h))),
+        ]
+    }
+
+    #[test]
+    fn dragging_the_high_corner_grows_the_shape_and_keeps_its_origin() {
+        let mut b = Builder::new();
+        let n = boxed(&mut b, [2, 2, 0], [4, 3, 0]);
+        let high = Corner {
+            high_x: true,
+            high_y: true,
+        };
+        let cmds = resize(&b, n, high, [6.0, 5.0], [8.2, 6.9]);
+        assert_eq!(sets(&cmds), vec![footprint(2, 2, 6, 5, n)]);
+    }
+
+    #[test]
+    fn dragging_the_low_corner_moves_the_origin_and_keeps_the_far_corner() {
+        let mut b = Builder::new();
+        let n = boxed(&mut b, [2, 2, 0], [4, 3, 0]);
+        let low = Corner {
+            high_x: false,
+            high_y: false,
+        };
+        let cmds = resize(&b, n, low, [2.0, 2.0], [0.9, 3.1]);
+        assert_eq!(sets(&cmds), vec![footprint(1, 3, 5, 2, n)]);
+    }
+
+    #[test]
+    fn a_corner_dragged_past_the_far_side_stops_at_one_cell() {
+        let mut b = Builder::new();
+        let n = boxed(&mut b, [2, 2, 0], [4, 3, 0]);
+        let mixed = Corner {
+            high_x: true,
+            high_y: false,
+        };
+        let cmds = resize(&b, n, mixed, [6.0, 2.0], [-10.0, 20.0]);
+        assert_eq!(sets(&cmds), vec![footprint(2, 4, 1, 1, n)]);
+    }
+
+    #[test]
+    fn escape_mid_resize_aborts_the_written_size() {
+        let mut b = Builder::new();
+        let n = boxed(&mut b, [0, 0, 0], [2, 2, 0]);
+        let corner = Corner {
+            high_x: true,
+            high_y: true,
+        };
+        let down = Pointer {
+            handle: Some(Handle {
+                node: n,
+                corner,
+                at: DVec3::new(2.0, 2.0, 0.0),
+            }),
+            ..above(2.0, 2.0)
+        };
+        let state = State {
+            selection: vec![n],
+            ..State::default()
+        };
+        let (s, cmds) = run_in(
+            Dimension::Two,
+            &b,
+            Tool::Select,
+            state,
+            vec![
+                Event::Down(Button::Primary, down),
+                Event::Move(above(4.0, 4.0)),
+                Event::Key(Key::Escape),
+            ],
+        );
+        assert_eq!(s.mode, Mode::Idle);
+        assert_eq!(cmds.last(), Some(&Command::Abort));
     }
 }

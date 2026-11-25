@@ -7,14 +7,16 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
+use client::camera::{self, Dimension, Orbit};
 use client::components::{self, Source};
 use client::floors::Floors;
 use client::history::History;
 use client::interaction::{
     self, Command, Ctx, DocOp, Event, GROUND, Mode, Mods, Pointer, State, Tool,
 };
+use client::look;
 use client::overlay;
-use client::{camera, look};
+use client::style::{self, Style};
 use doc::{Change, Dirty, Doc, NodeId, Point3, Presence, WorkPlane};
 use engine::{Camera, Gpu, HoloParams, Scene};
 use glam::DVec3;
@@ -55,8 +57,11 @@ pub struct Ui {
     pub rev: RwSignal<u64>,
     pub tool: RwSignal<Tool>,
     pub selected: RwSignal<usize>,
+    /// The first styleable selected node's style; None hides the panel.
+    pub style: RwSignal<Option<Style>>,
     pub text: RwSignal<Option<TextBox>>,
     pub floor: RwSignal<Option<i32>>,
+    pub dimension: RwSignal<Dimension>,
     pub holo: RwSignal<HoloParams>,
     pub lab: RwSignal<bool>,
     pub library: RwSignal<bool>,
@@ -71,8 +76,10 @@ impl Ui {
             rev: RwSignal::new(0),
             tool: RwSignal::new(Tool::Select),
             selected: RwSignal::new(0),
+            style: RwSignal::new(None),
             text: RwSignal::new(None),
             floor: RwSignal::new(None),
+            dimension: RwSignal::new(Dimension::default()),
             holo: RwSignal::new(holo),
             lab: RwSignal::new(false),
             library: RwSignal::new(false),
@@ -93,6 +100,9 @@ pub struct Editor {
     pub page: Option<NodeId>,
     pub scene: Scene,
     pub camera: Camera,
+    pub dimension: Dimension,
+    /// The 3D orientation to restore when leaving 2D.
+    resume: Orbit,
     /// Canvas size in device pixels.
     pub size: [u32; 2],
     pub dpr: f64,
@@ -117,15 +127,21 @@ pub struct Editor {
 
 impl Editor {
     pub fn new(ui: Ui, room: String) -> Editor {
+        let start = Camera {
+            target: DVec3::new(4.0, 4.0, 0.0),
+            ..Camera::default()
+        };
+        let dimension = Dimension::default();
+        let mut camera = start;
+        camera::settle(&mut camera, dimension);
         Editor {
             ui,
             collab: Collab::new(room),
             page: None,
             scene: Scene::default(),
-            camera: Camera {
-                target: DVec3::new(4.0, 4.0, 0.0),
-                ..Camera::default()
-            },
+            camera,
+            dimension,
+            resume: Orbit::of(&start),
             size: [1, 1],
             dpr: 1.0,
             state: State::default(),
@@ -162,6 +178,7 @@ impl Editor {
         let cx = Ctx {
             doc,
             locked: self.floors.map(Floors::plane),
+            dimension: self.dimension,
         };
         let (state, cmds) = interaction::step(std::mem::take(&mut self.state), ev, self.tool, cx);
         self.state = state;
@@ -217,7 +234,8 @@ impl Editor {
                     self.apply(revert);
                 }
             }
-            Command::Camera(op) => camera::apply(&mut self.camera, op, self.size),
+            Command::UseTool(t) => self.tool = t,
+            Command::Camera(op) => camera::apply(&mut self.camera, op, self.size, self.dimension),
             Command::Undo => {
                 if let Some(inv) = self.history.undo()
                     && let Some((b, redo)) = self.apply(inv)
@@ -335,6 +353,25 @@ impl Editor {
             })
             .flatten();
         let link = overlay::link_at(&self.scene, &self.camera, self.size, px, 6.0 * self.dpr);
+        let handle = (self.tool == Tool::Select)
+            .then(|| {
+                let hs = overlay::handles(doc, &self.state.selection, self.dimension);
+                overlay::handle_at(&hs, &self.camera, self.size, px, 8.0 * self.dpr)
+            })
+            .flatten();
+        if let Some(c) = &self.canvas {
+            // Screen +Y is world +Y in 2D, so matching sides run "/".
+            let active = match self.state.mode {
+                Mode::Resizing { handle, .. } => Some(handle),
+                _ => handle,
+            };
+            let cursor = match active.map(|h| h.corner) {
+                Some(k) if k.high_x == k.high_y => "nesw-resize",
+                Some(_) => "nwse-resize",
+                None => "",
+            };
+            let _ = web_sys::HtmlElement::style(c).set_property("cursor", cursor);
+        }
         let plane = self.locked().unwrap_or(self.state.plane);
         self.cursor = hit
             .as_ref()
@@ -347,6 +384,7 @@ impl Editor {
             hit,
             gizmo,
             link,
+            handle,
             mods: Mods {
                 shift,
                 space: self.space,
@@ -355,8 +393,34 @@ impl Editor {
     }
 
     pub fn set_tool(&mut self, tool: Tool) {
-        if self.state.mode == Mode::Idle {
+        if self.state.mode == Mode::Idle && available(tool, self.dimension) {
             self.tool = tool;
+        }
+    }
+
+    /// Applies one style panel edit to every styleable selected node, as one
+    /// undo step.
+    pub fn restyle(&mut self, edit: style::Edit) {
+        if self.state.mode != Mode::Idle {
+            return;
+        }
+        let nodes = style::styled(self.doc(), &self.state.selection);
+        let changes = style::changes(&self.scene, &nodes, edit);
+        if !changes.is_empty() {
+            self.submit(changes);
+        }
+    }
+
+    /// Switches between 2D and 3D. Only between gestures.
+    pub fn set_dimension(&mut self, to: Dimension) {
+        if self.state.mode != Mode::Idle || to == self.dimension {
+            return;
+        }
+        self.resume = camera::switch(&mut self.camera, to, self.resume);
+        self.dimension = to;
+        self.state.plane = self.locked().unwrap_or(GROUND);
+        if !available(self.tool, to) {
+            self.tool = Tool::Select;
         }
     }
 
@@ -478,6 +542,7 @@ impl Editor {
         holo.time = (now_ms / 1000.0) as f32;
         let markers = self.markers();
         if let Some(g) = &mut self.gpu {
+            g.set_style(self.dimension.style());
             g.set_markers(&markers);
             g.draw(&self.scene, &self.camera, &holo);
         }
@@ -538,6 +603,7 @@ impl Editor {
             hover: self.hover,
             peers,
             floors: self.floors,
+            dimension: self.dimension,
         });
         format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}" preserveAspectRatio="none" style="width:100%;height:100%">{body}</svg>"#,
@@ -571,9 +637,14 @@ impl Editor {
     }
 }
 
+/// Push/pull only makes sense with depth to pull into.
+pub fn available(tool: Tool, dim: Dimension) -> bool {
+    tool != Tool::PushPull || dim == Dimension::Three
+}
+
 /// Copies editor state into the chrome's signals. Call with no borrow held.
 pub fn sync(sh: &Shared) {
-    let (ui, status, peers, rev, tool, selected, text, floor) = {
+    let (ui, status, peers, rev, tool, selected, text, floor, dimension, styled) = {
         let ed = sh.borrow();
         let status = match (ed.collab.online(), ed.collab.replica()) {
             (true, _) => "online".to_string(),
@@ -618,6 +689,10 @@ pub fn sync(sh: &Shared) {
             ed.state.selection.len(),
             text,
             ed.floors.map(|f| f.level),
+            ed.dimension,
+            style::styled(ed.doc(), &ed.state.selection)
+                .first()
+                .and_then(|n| style::of(&ed.scene, *n)),
         )
     };
     set(ui.status, status);
@@ -627,6 +702,8 @@ pub fn sync(sh: &Shared) {
     set(ui.selected, selected);
     set(ui.text, text);
     set(ui.floor, floor);
+    set(ui.dimension, dimension);
+    set(ui.style, styled);
 }
 
 /// Opens a socket to the room and keeps reopening it with backoff.

@@ -3,7 +3,8 @@
 //! - `occurrences()` every occurrence on the canvas page: `id`, `kind`,
 //!   `box` (world cells: x, y, z, w, h, d) or `from`/`to` for connectors,
 //!   and `text`.
-//! - `camera()` target, eye, yaw, pitch, distance.
+//! - `camera()` target, eye, yaw, pitch, distance, dimension ("2D" or "3D"),
+//!   orthographic.
 //! - `peers()` the other clients: id, cursor, selection size.
 //! - `me()` this client's id, the room, and whether it is online.
 
@@ -98,6 +99,11 @@ fn camera(sh: &Shared) -> JsValue {
         ("yaw", num(c.yaw)),
         ("pitch", num(c.pitch)),
         ("distance", num(c.distance)),
+        ("dimension", JsValue::from_str(ed.dimension.label())),
+        (
+            "orthographic",
+            JsValue::from_bool(c.projection == engine::Projection::Orthographic),
+        ),
     ])
 }
 

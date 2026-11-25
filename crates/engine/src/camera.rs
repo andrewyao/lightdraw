@@ -5,14 +5,22 @@
 //! rotation-only view matrix. A shape a million cells from the origin draws
 //! as steadily as one at the origin.
 //!
-//! Z is up. The ground is the XY plane at z = 0. Depth is reversed with an
-//! infinite far plane: NDC z is 1 at the near plane and 0 at infinity.
+//! Z is up. The ground is the XY plane at z = 0. Depth is reversed: NDC z is
+//! 1 at the near plane and 0 at the far one, which perspective puts at
+//! infinity.
+//!
+//! Orthographic views keep `distance` as the zoom: the visible height is what
+//! perspective shows at the target's depth, so switching keeps the scale.
+//! Their near plane sits `ORTHO_REACH` behind the eye, and rays start there,
+//! so zooming in never clips a tall shape.
 
 use glam::{DMat4, DVec3, DVec4, Mat4};
 
 /// Distance from the eye to the near plane, in cells.
 pub const NEAR: f64 = 0.05;
 const MIN_DISTANCE: f64 = 0.5;
+/// How far an orthographic view sees behind the eye and past the target.
+pub const ORTHO_REACH: f64 = 2000.0;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Camera {
@@ -24,8 +32,18 @@ pub struct Camera {
     pub pitch: f64,
     /// From the eye to `target`, in cells.
     pub distance: f64,
-    /// Vertical field of view, radians.
+    /// Vertical field of view, radians. Orthographic views use it only to
+    /// size the view from `distance`.
     pub fov_y: f64,
+    pub projection: Projection,
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Projection {
+    #[default]
+    Perspective,
+    /// Parallel rays along `forward`, for the flat 2D view.
+    Orthographic,
 }
 
 /// The number-key views. Each looks straight down one axis.
@@ -68,6 +86,7 @@ impl Default for Camera {
             pitch: 0.6,
             distance: 30.0,
             fov_y: 50f64.to_radians(),
+            projection: Projection::Perspective,
         }
     }
 }
@@ -102,9 +121,49 @@ impl Camera {
     }
 
     pub fn projection(&self, size: [u32; 2]) -> DMat4 {
-        let t = NEAR * (self.fov_y / 2.0).tan();
-        let r = t * aspect(size);
-        frustum(-r, r, -t, t, NEAR)
+        match self.projection {
+            Projection::Perspective => {
+                let t = NEAR * (self.fov_y / 2.0).tan();
+                let r = t * aspect(size);
+                frustum(-r, r, -t, t, NEAR)
+            }
+            Projection::Orthographic => {
+                let h = self.half_height();
+                let (near, far) = (-ORTHO_REACH, self.distance + ORTHO_REACH);
+                ortho(h * aspect(size), h, near, far)
+            }
+        }
+    }
+
+    /// Half the view's height in cells at the target's depth.
+    fn half_height(&self) -> f64 {
+        self.distance * (self.fov_y / 2.0).tan()
+    }
+
+    /// Screen pixels per cell for something `depth` cells in front of the
+    /// eye along `forward`.
+    pub fn px_per_cell(&self, depth: f64, size: [u32; 2]) -> f64 {
+        let depth = match self.projection {
+            Projection::Perspective => depth,
+            Projection::Orthographic => self.distance,
+        };
+        f64::from(size[1].max(1)) / (2.0 * (self.fov_y / 2.0).tan() * depth)
+    }
+
+    /// The least depth along `forward` the view still shows.
+    pub fn min_depth(&self) -> f64 {
+        match self.projection {
+            Projection::Perspective => NEAR,
+            Projection::Orthographic => -ORTHO_REACH,
+        }
+    }
+
+    /// From `p` back toward the viewer, not normalized.
+    pub fn toward_viewer(&self, p: DVec3) -> DVec3 {
+        match self.projection {
+            Projection::Perspective => self.eye() - p,
+            Projection::Orthographic => -self.basis().forward,
+        }
     }
 
     /// Full world to clip transform, in f64. For culling and tests.
@@ -121,11 +180,23 @@ impl Camera {
     pub fn ray(&self, px: [f64; 2], size: [u32; 2]) -> Ray {
         let b = self.basis();
         let [nx, ny] = ndc(px, size);
-        let ty = (self.fov_y / 2.0).tan();
-        let dir = b.forward + b.right * (nx * ty * aspect(size)) + b.up * (ny * ty);
-        Ray {
-            origin: self.eye(),
-            dir: dir.normalize(),
+        match self.projection {
+            Projection::Perspective => {
+                let ty = (self.fov_y / 2.0).tan();
+                let dir = b.forward + b.right * (nx * ty * aspect(size)) + b.up * (ny * ty);
+                Ray {
+                    origin: self.eye(),
+                    dir: dir.normalize(),
+                }
+            }
+            Projection::Orthographic => {
+                let h = self.half_height();
+                let offset = b.right * (nx * h * aspect(size)) + b.up * (ny * h);
+                Ray {
+                    origin: self.eye() + offset - b.forward * ORTHO_REACH,
+                    dir: b.forward,
+                }
+            }
         }
     }
 
@@ -161,7 +232,8 @@ impl Camera {
     pub fn dolly_to_cursor(&mut self, factor: f64, px: [f64; 2], size: [u32; 2]) {
         let factor = factor.max(MIN_DISTANCE / self.distance);
         let ray = self.ray(px, size);
-        let anchor = ray.at(self.distance / ray.dir.dot(self.basis().forward));
+        let forward = self.basis().forward;
+        let anchor = ray.at((self.target - ray.origin).dot(forward) / ray.dir.dot(forward));
         self.target = anchor + (self.target - anchor) * factor;
         self.distance *= factor;
     }
@@ -199,6 +271,17 @@ pub fn frustum(l: f64, r: f64, b: f64, t: f64, near: f64) -> DMat4 {
         DVec4::new(0.0, 2.0 * near / (t - b), 0.0, 0.0),
         DVec4::new((r + l) / (r - l), (t + b) / (t - b), 0.0, -1.0),
         DVec4::new(0.0, 0.0, near, 0.0),
+    )
+}
+
+/// Orthographic with reversed depth: eye-space x in [-r, r] and y in
+/// [-t, t]; depth 1 at `near` and 0 at `far`, both in front of the eye.
+fn ortho(r: f64, t: f64, near: f64, far: f64) -> DMat4 {
+    DMat4::from_cols(
+        DVec4::new(1.0 / r, 0.0, 0.0, 0.0),
+        DVec4::new(0.0, 1.0 / t, 0.0, 0.0),
+        DVec4::new(0.0, 0.0, 1.0 / (far - near), 0.0),
+        DVec4::new(0.0, 0.0, far / (far - near), 1.0),
     )
 }
 
@@ -275,7 +358,16 @@ mod tests {
             pitch: 0.5,
             distance: 20.0,
             fov_y: 0.9,
+            projection: Projection::Perspective,
         }
+    }
+
+    fn both() -> [Camera; 2] {
+        let ortho = Camera {
+            projection: Projection::Orthographic,
+            ..tilted()
+        };
+        [tilted(), ortho]
     }
 
     fn close(a: DVec3, b: DVec3) -> bool {
@@ -303,36 +395,90 @@ mod tests {
 
     #[test]
     fn a_ray_through_a_projected_point_passes_through_that_point() {
-        let c = tilted();
-        let p = DVec3::new(5.0, 1.0, 2.5);
-        let px = c.project(p, SIZE).unwrap();
-        let ray = c.ray(px, SIZE);
-        let to_p = (p - ray.origin).normalize();
-        assert!(close(ray.dir, to_p), "{:?} vs {to_p}", ray.dir);
-        assert!(close(c.ray([400.0, 300.0], SIZE).dir, c.basis().forward));
+        for c in both() {
+            let p = DVec3::new(5.0, 1.0, 2.5);
+            let px = c.project(p, SIZE).unwrap();
+            let ray = c.ray(px, SIZE);
+            let along = ray.dir.dot(p - ray.origin);
+            assert!(along > 0.0, "{:?}: p behind the ray", c.projection);
+            assert!(
+                close(ray.at(along), p),
+                "{:?}: {:?} misses {p}",
+                c.projection,
+                ray
+            );
+            assert!(close(c.ray([400.0, 300.0], SIZE).dir, c.basis().forward));
+        }
+    }
+
+    #[test]
+    fn an_orthographic_ray_starts_behind_shapes_taller_than_the_zoom() {
+        let c = Camera {
+            target: DVec3::ZERO,
+            pitch: std::f64::consts::FRAC_PI_2,
+            distance: 2.0,
+            projection: Projection::Orthographic,
+            ..Camera::default()
+        };
+        let roof = DVec3::new(0.0, 0.0, 50.0);
+        let ray = c.ray([400.0, 300.0], SIZE);
+        assert!(ray.origin.z > roof.z, "ray starts at {}", ray.origin);
+        let depth = (roof - c.eye()).dot(c.basis().forward);
+        assert!(depth > c.min_depth(), "culled at depth {depth}");
+        let clip = c.view_projection(SIZE) * roof.extend(1.0);
+        assert!(clip.z > 0.0 && clip.z < 1.0, "depth {}", clip.z);
     }
 
     #[test]
     fn dolly_keeps_the_point_under_the_cursor_fixed() {
-        let mut c = tilted();
-        let px = [610.0, 140.0];
-        let ray = c.ray(px, SIZE);
-        let anchor = ray.at(c.distance / ray.dir.dot(c.basis().forward));
-        c.dolly_to_cursor(0.5, px, SIZE);
-        let after = c.project(anchor, SIZE).unwrap();
-        assert!((after[0] - px[0]).abs() < 1e-6 && (after[1] - px[1]).abs() < 1e-6);
-        assert!((c.distance - 10.0).abs() < 1e-12);
+        for mut c in both() {
+            let px = [610.0, 140.0];
+            let ray = c.ray(px, SIZE);
+            let forward = c.basis().forward;
+            let anchor = ray.at((c.target - ray.origin).dot(forward) / ray.dir.dot(forward));
+            c.dolly_to_cursor(0.5, px, SIZE);
+            let after = c.project(anchor, SIZE).unwrap();
+            assert!(
+                (after[0] - px[0]).abs() < 1e-6 && (after[1] - px[1]).abs() < 1e-6,
+                "{:?}: {after:?}",
+                c.projection
+            );
+            assert!((c.distance - 10.0).abs() < 1e-12);
+        }
     }
 
     #[test]
     fn pan_drags_the_target_plane_with_the_cursor() {
-        let mut c = tilted();
-        let p = c.target + c.basis().right * 2.0;
-        let before = c.project(p, SIZE).unwrap();
-        c.pan([37.0, -12.0], SIZE);
-        let after = c.project(p, SIZE).unwrap();
-        assert!((after[0] - before[0] - 37.0).abs() < 1e-6);
-        assert!((after[1] - before[1] + 12.0).abs() < 1e-6);
+        for mut c in both() {
+            let p = c.target + c.basis().right * 2.0;
+            let before = c.project(p, SIZE).unwrap();
+            c.pan([37.0, -12.0], SIZE);
+            let after = c.project(p, SIZE).unwrap();
+            assert!(
+                (after[0] - before[0] - 37.0).abs() < 1e-6,
+                "{:?}",
+                c.projection
+            );
+            assert!(
+                (after[1] - before[1] + 12.0).abs() < 1e-6,
+                "{:?}",
+                c.projection
+            );
+        }
+    }
+
+    #[test]
+    fn switching_projection_keeps_the_target_plane_at_the_same_scale() {
+        let [persp, ortho] = both();
+        let p = persp.target + persp.basis().right * 3.0 + persp.basis().up * 2.0;
+        let (a, b) = (
+            persp.project(p, SIZE).unwrap(),
+            ortho.project(p, SIZE).unwrap(),
+        );
+        assert!(
+            (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6,
+            "{a:?} vs {b:?}"
+        );
     }
 
     #[test]

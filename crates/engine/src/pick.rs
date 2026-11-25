@@ -240,7 +240,7 @@ pub fn on_plane(ray: &Ray, plane: &WorkPlane) -> Option<(DVec3, CellVec)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::{Camera, View};
+    use crate::camera::{Camera, Projection, View};
     use crate::demo::{Builder, showcase};
     use crate::scene::tests::rack;
     use doc::NodeId;
@@ -254,6 +254,7 @@ mod tests {
             pitch: 0.5,
             distance: 14.0,
             fov_y: 0.8,
+            projection: Projection::Perspective,
         }
     }
 

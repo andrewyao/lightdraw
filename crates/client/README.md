@@ -15,8 +15,12 @@ The server listens on :8080 and serves `crates/client/dist`. Open http://localho
 
 ## Controls
 
+- M or the toolbar's 2D/3D button switches mode. 2D, the default, is a flat drawing view straight down with no glow or screen effects: right-drag pans, and push/pull, the axis views, and Shift-drag's vertical move are off. 3D is the hologram with orbit, push/pull, and every camera angle, and comes back to the last 3D angle.
 - Tools: V select, R rectangle, D diamond, O ellipse, H hexagon, A arrow, L line, T text, N note, U push/pull. Each toolbar button shows its key.
 - Draw on the ground, or press on a face to draw on that face.
+- After a shape, connector, text, or note is made, the tool goes back to Select.
+- Selecting a shape opens the Style panel: text and border colours from one palette, background colour from a lighter one, border thickness (0 hides the border), and background opacity. Each change applies to every selected shape as one undo step. In 2D an opaque background hides what is under it; in 3D colours join the hologram's hue family.
+- In 2D, a single selected shape shows a handle on each corner: drag one to resize, with the opposite corner fixed.
 - Select tool: drag moves on the work plane, Shift-drag moves along its normal, the axis arrows move along one axis, Shift-click toggles selection.
 - Right-drag orbits, middle-drag or Space-drag pans, the wheel dollies to the cursor, 1/2/3 snap to front/side/top.
 - Double-click a face or connector to type. Enter or Escape commits.
@@ -26,4 +30,4 @@ The server listens on :8080 and serves `crates/client/dist`. Open http://localho
 
 ## Debug hook
 
-`window.__lightdraw.occurrences()`, `.camera()`, `.peers()`, and `.me()` return plain objects for automated checks.
+`window.__lightdraw.occurrences()`, `.camera()` (including `dimension` and `orthographic`), `.peers()`, and `.me()` return plain objects for automated checks.

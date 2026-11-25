@@ -31,11 +31,11 @@ pub use headless::{
     Headless, Offscreen, RenderError, TARGET_FORMAT, render_rgba, render_to_png, write_png,
 };
 
-pub use camera::{Camera, View};
+pub use camera::{Camera, Projection, View};
 pub use encode::DrawList;
 pub use face::Rect;
 pub use holo::HoloParams;
-pub use render::{Frame, Marker, Output, Renderer};
+pub use render::{Frame, Marker, Output, Renderer, Style};
 pub use scene::Scene;
 
 /// A configured device and surface, ready to draw a frame.
@@ -173,12 +173,18 @@ impl Gpu {
         self.renderer().set_markers(markers);
     }
 
+    /// The style every later `draw` uses.
+    pub fn set_style(&mut self, style: Style) {
+        self.renderer().set_style(style);
+    }
+
     fn renderer(&mut self) -> &mut Renderer {
         self.renderer
             .get_or_insert_with(|| Renderer::new(&self.device, self.config.format))
     }
 
-    /// Draws what `camera` sees of `scene` in the `holo` look and presents it.
+    /// Draws what `camera` sees of `scene` and presents it. `holo` tunes the
+    /// hologram style.
     pub fn draw(&mut self, scene: &Scene, camera: &Camera, holo: &HoloParams) {
         let Some(frame) = self.acquire() else { return };
         let view = frame.texture.create_view(&Default::default());

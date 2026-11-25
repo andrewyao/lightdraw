@@ -17,8 +17,20 @@ pub struct Body<'a> {
     /// Relative to the parent.
     pub bounds: CellBox,
     pub label: Option<Label<'a>>,
+    pub paint: Paint,
+}
+
+/// How a node with a body is coloured. Absent values take the renderer's
+/// defaults.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Paint {
+    /// The background. Its alpha is the background's opacity.
     pub fill: Option<Rgba>,
+    /// The border.
     pub stroke: Option<Rgba>,
+    /// Border width in screen pixels. 0 draws no border.
+    pub stroke_width: Option<u8>,
+    pub text: Option<Rgba>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -85,8 +97,7 @@ impl OccId {
 pub struct Solid<'a> {
     pub world: CellBox,
     pub label: Option<Label<'a>>,
-    pub fill: Option<Rgba>,
-    pub stroke: Option<Rgba>,
+    pub paint: Paint,
 }
 
 /// A resolved connector end in world cells.
@@ -184,8 +195,7 @@ impl<'a> Occurrences<'a> {
                 ..body.bounds
             },
             label: body.label,
-            fill: body.fill,
-            stroke: body.stroke,
+            paint: body.paint,
         };
         let item = match node {
             Node::Page => {
@@ -243,8 +253,7 @@ impl<'a> Occurrences<'a> {
                 Item::Group(Solid {
                     world,
                     label: None,
-                    fill: None,
-                    stroke: None,
+                    paint: Paint::default(),
                 })
             }
         };
@@ -416,7 +425,7 @@ impl Doc {
             _ => None,
         };
         let color = |k| match a(k) {
-            Some(Attr::Fill(c) | Attr::Stroke(c)) => Some(*c),
+            Some(Attr::Fill(c) | Attr::Stroke(c) | Attr::TextColor(c)) => Some(*c),
             _ => None,
         };
         let body = || Body {
@@ -427,8 +436,15 @@ impl Doc {
                 d: extent(AttrKey::D),
             },
             label: label(),
-            fill: color(AttrKey::Fill),
-            stroke: color(AttrKey::Stroke),
+            paint: Paint {
+                fill: color(AttrKey::Fill),
+                stroke: color(AttrKey::Stroke),
+                stroke_width: match a(AttrKey::StrokeWidth) {
+                    Some(Attr::StrokeWidth(w)) => Some(*w),
+                    _ => None,
+                },
+                text: color(AttrKey::TextColor),
+            },
         };
         let point = |k| match self.intrinsic(id, k)? {
             Intrinsic::CamEye(p) | Intrinsic::CamLook(p) => Some(*p),

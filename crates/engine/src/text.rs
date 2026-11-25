@@ -19,7 +19,7 @@ use ab_glyph::{Font, FontRef, GlyphId, PxScale, point};
 use doc::{Face, Profile};
 use glam::DVec3;
 
-use crate::camera::{Basis, Camera, NEAR};
+use crate::camera::{Basis, Camera};
 use crate::face::{self, Quad};
 use crate::pick::frame_axes;
 use crate::scene::{Entry, Look};
@@ -322,8 +322,9 @@ fn place(lines: &[Line], em: f32, ellipsized: bool) -> Layout {
 
 /// One glyph quad as the glyph shader reads it: eye-relative lower-left
 /// corner and brightness, the right and up edges, the atlas rectangle
-/// (left, top, right, bottom), and linear RGBA.
-pub type GlyphInstance = [f32; 20];
+/// (left, top, right, bottom), then linear RGBA for the hologram and for the
+/// flat style.
+pub type GlyphInstance = [f32; 24];
 
 /// Where `e`'s glyphs go this frame.
 struct Card {
@@ -337,8 +338,8 @@ struct Card {
 pub(crate) struct Eye {
     pub at: DVec3,
     pub basis: Basis,
-    /// Pixels per cell at one cell of view depth.
-    pub px_per_cell: f64,
+    pub camera: Camera,
+    pub size: [u32; 2],
 }
 
 impl Eye {
@@ -346,7 +347,8 @@ impl Eye {
         Eye {
             at: camera.eye(),
             basis: camera.basis(),
-            px_per_cell: f64::from(size[1].max(1)) / (2.0 * (camera.fov_y / 2.0).tan()),
+            camera: *camera,
+            size,
         }
     }
 }
@@ -377,7 +379,7 @@ pub(crate) fn emit(out: &mut Vec<GlyphInstance>, atlas: &mut Atlas, e: &Entry, e
                 centre,
                 right: q.right.normalize(),
                 up,
-                brightness: if (eye.at - centre).dot(n) < 0.0 {
+                brightness: if eye.camera.toward_viewer(centre).dot(n) < 0.0 {
                     FAR_SIDE
                 } else {
                     1.0
@@ -386,10 +388,12 @@ pub(crate) fn emit(out: &mut Vec<GlyphInstance>, atlas: &mut Atlas, e: &Entry, e
         }
     };
     let depth = (card.centre - eye.at).dot(eye.basis.forward);
-    if depth <= NEAR || f64::from(layout.em) * eye.px_per_cell / depth < MIN_EM_PX {
+    if depth <= eye.camera.min_depth()
+        || f64::from(layout.em) * eye.camera.px_per_cell(depth, eye.size) < MIN_EM_PX
+    {
         return;
     }
-    let color = e.color;
+    let (color, flat) = (e.shade.glow_text, e.shade.flat_text);
     for g in &layout.glyphs {
         let Some(slot) = atlas.slot(g.id) else {
             continue;
@@ -421,6 +425,10 @@ pub(crate) fn emit(out: &mut Vec<GlyphInstance>, atlas: &mut Atlas, e: &Entry, e
             color[1],
             color[2],
             color[3],
+            flat[0],
+            flat[1],
+            flat[2],
+            flat[3],
         ]);
     }
 }

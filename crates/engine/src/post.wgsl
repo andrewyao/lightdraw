@@ -87,6 +87,10 @@ fn scene_and_bloom(uv: vec2<f32>) -> vec3<f32> {
 
 // The composite in display space, before any sRGB encode.
 fn composite(uv: vec2<f32>, px: vec2<f32>) -> vec3<f32> {
+    if flat() {
+        let s = textureSampleLevel(src, samp, uv, 0.0).rgb;
+        return pow(clamp(s, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
+    }
     let h = g.holo;
     let size = g.eye.yz;
     let d = uv - 0.5;

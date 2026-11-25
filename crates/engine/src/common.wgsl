@@ -34,12 +34,17 @@ struct Globals {
     grid: vec4<f32>,
     // xyz: projector centre on the ground, relative to the eye. w: radius.
     stage: vec4<f32>,
-    // x: cone height. y: ground height in world cells.
+    // x: cone height. y: ground height in world cells. z: 1 for the flat
+    // style, 0 for the hologram.
     stage2: vec4<f32>,
     holo: Holo,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
+
+fn flat() -> bool {
+    return g.stage2.z > 0.5;
+}
 
 fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
     let k = fract(vec3<f32>(c.x) + vec3<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0;
@@ -69,6 +74,9 @@ const FILL_REFERENCE: f32 = 0.55;
 const FAMILY_SPAN: f32 = 0.22;
 
 fn family(fill: vec3<f32>) -> vec3<f32> {
+    if flat() {
+        return fill;
+    }
     let f = rgb2hsv(fill);
     let d = fract(f.x - FILL_REFERENCE + 0.5) - 0.5;
     let h = g.holo.hue + d * FAMILY_SPAN * f.y;

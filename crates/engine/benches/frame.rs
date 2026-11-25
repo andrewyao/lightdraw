@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use criterion::{Criterion, criterion_group, criterion_main};
 use doc::{Axis, Face, NodeId, Profile};
 use engine::demo::Builder;
-use engine::{Camera, DrawList, HoloParams, Offscreen, Scene};
+use engine::{Camera, DrawList, HoloParams, Offscreen, Projection, Scene};
 use glam::DVec3;
 
 const FRAMES: i32 = 10; // per side, so 100 frames
@@ -79,6 +79,7 @@ fn closeup() -> Camera {
         pitch: 0.9,
         distance: 60.0,
         fov_y: 50f64.to_radians(),
+        projection: Projection::Perspective,
     }
 }
 
@@ -91,6 +92,7 @@ fn overview() -> Camera {
         pitch: 0.7,
         distance: 700.0,
         fov_y: 50f64.to_radians(),
+        projection: Projection::Perspective,
     }
 }
 

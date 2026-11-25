@@ -5,6 +5,7 @@ use std::time::Duration;
 use client::components;
 use client::interaction::{Button, Event, Key, Mode, Tool};
 use client::look::{self, FIELDS};
+use client::style::{self, Edit, INK, MAX_STROKE_PX, PAPER, Swatch};
 use doc::{Profile, Tip};
 use engine::{HoloParams, View};
 use leptos::ev;
@@ -16,7 +17,7 @@ use web_sys::{DragEvent, Element, KeyboardEvent, PointerEvent, WheelEvent};
 
 use crate::collab;
 use crate::debug;
-use crate::editor::{self, Editor, Shared, Ui, sync};
+use crate::editor::{self, Editor, Shared, Ui, available, sync};
 
 type Sv = StoredValue<Shared, LocalStorage>;
 
@@ -108,6 +109,7 @@ fn on_key(sv: Sv, ui: Ui, e: KeyboardEvent) {
             sv.with_value(|sh| sh.borrow_mut().space = true);
         }
         "f" | "F" => act(sv, |ed| ed.toggle_floors()),
+        "m" | "M" => act(sv, |ed| ed.set_dimension(ed.dimension.other())),
         "PageUp" => {
             e.prevent_default();
             act(sv, |ed| ed.step_floor(true));
@@ -288,6 +290,9 @@ pub fn App() -> impl IntoView {
             <Show when=move || ui.lab.get()>
                 <LookLab ui/>
             </Show>
+            <Show when=move || ui.style.get().is_some()>
+                <StylePanel sv ui/>
+            </Show>
         </main>
     }
 }
@@ -297,12 +302,25 @@ fn Toolbar(sv: Sv, ui: Ui) -> impl IntoView {
     let key = move |k: Key| move |_| act(sv, |ed| ed.dispatch(Event::Key(k)));
     view! {
         <nav class="toolbar">
+            <button
+                class="dimension"
+                data-testid="dimension"
+                title="Switch between 2D and 3D (M)"
+                on:click=move |_| act(sv, |ed| ed.set_dimension(ed.dimension.other()))
+            >
+                {move || ui.dimension.get().label()}
+                <kbd>"M"</kbd>
+            </button>
+            <span class="sep"></span>
             {TOOLS
                 .iter()
                 .map(|&(t, label, k)| {
                     view! {
                         <button
                             class:on=move || ui.tool.get() == t
+                            style:display=move || {
+                                (!available(t, ui.dimension.get())).then_some("none")
+                            }
                             title=format!("{label} ({k})")
                             on:click=move |_| act(sv, |ed| ed.set_tool(t))
                         >
@@ -477,6 +495,95 @@ fn Library(sv: Sv, ui: Ui) -> impl IntoView {
             <ul>{builtins}</ul>
             <h4>"In this room"</h4>
             <ul>{room}</ul>
+        </section>
+    }
+}
+
+/// Applies `edit` on commit, then gives focus back to the canvas so the
+/// keyboard shortcuts keep working.
+fn commit(sv: Sv, e: &leptos::ev::Event, edit: Option<Edit>) {
+    if let Some(edit) = edit {
+        act(sv, |ed| ed.restyle(edit));
+    }
+    if let Some(t) = e
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+    {
+        let _ = t.blur();
+    }
+}
+
+/// One row of palette swatches. The one matching `current` is marked.
+#[component]
+fn Swatches(
+    sv: Sv,
+    label: &'static str,
+    palette: [Swatch; 11],
+    current: impl Fn() -> [u8; 3] + Copy + Send + Sync + 'static,
+    edit: fn([u8; 3]) -> Edit,
+) -> impl IntoView {
+    view! {
+        <div class="swatches" data-testid=format!("{}-palette", label.to_lowercase())>
+            <span>{label}</span>
+            <div class="row">
+                {palette
+                    .into_iter()
+                    .map(|(name, c)| {
+                        view! {
+                            <button
+                                class="swatch"
+                                class:on=move || current() == c
+                                title=name
+                                aria-label=format!("{label}: {name}")
+                                style:background=style::hex(c)
+                                on:click=move |_| act(sv, |ed| ed.restyle(edit(c)))
+                            ></button>
+                        }
+                    })
+                    .collect_view()}
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn StylePanel(sv: Sv, ui: Ui) -> impl IntoView {
+    let now = move || ui.style.get().expect("shown only with a style");
+    let number = move |e: &leptos::ev::Event| event_target_value(e).parse::<u8>().ok();
+    view! {
+        <section class="panel style" data-testid="style">
+            <h3>"Style"</h3>
+            <Swatches sv label="Text" palette=INK current=move || now().text edit=Edit::Text/>
+            <Swatches sv label="Border" palette=INK current=move || now().stroke edit=Edit::Stroke/>
+            <label class="slider">
+                <span>"Thickness"</span>
+                <input
+                    type="range"
+                    data-testid="stroke-width"
+                    min="0"
+                    max=MAX_STROKE_PX
+                    step="1"
+                    prop:value=move || now().stroke_px.to_string()
+                    on:change=move |e| commit(sv, &e, number(&e).map(Edit::StrokeWidth))
+                />
+                <output>{move || format!("{} px", now().stroke_px)}</output>
+            </label>
+            <Swatches sv label="Background" palette=PAPER current=move || now().fill edit=Edit::Fill/>
+            <label class="slider">
+                <span>"Opacity"</span>
+                <input
+                    type="range"
+                    data-testid="fill-alpha"
+                    min="0"
+                    max="255"
+                    step="1"
+                    prop:value=move || now().fill_alpha.to_string()
+                    on:change=move |e| commit(sv, &e, number(&e).map(Edit::FillAlpha))
+                />
+                <output>
+                    {move || format!("{:.0}%", f64::from(now().fill_alpha) / 2.55)}
+                </output>
+            </label>
         </section>
     }
 }
