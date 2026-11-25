@@ -13,7 +13,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SITE_DIR="${ANDREWYAO_APP_DIR:-$ROOT/../andrewyao-app/andrewyao-app}"
+SITE_DIR="${ANDREWYAO_APP_DIR:-$ROOT/../andrewyao-app}"
 DRAW="$SITE_DIR/public/draw"
 export PATH="$ROOT/.tools/bin:$PATH"
 

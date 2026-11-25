@@ -146,6 +146,14 @@ pub enum Profile {
     Hexagon,
 }
 
+/// What a connector draws at its `To` end.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Tip {
+    #[default]
+    None,
+    Arrow,
+}
+
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Axis {
     X,
@@ -312,6 +320,7 @@ registers! {
         TextFace(Face),
         Fill(Rgba),
         Stroke(Rgba),
+        Tip(Tip),
     }
 }
 

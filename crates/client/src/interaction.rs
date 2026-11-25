@@ -13,7 +13,7 @@
 
 use doc::{
     Attr, Axis, Cell, CellBox, CellVec, Change, Doc, Endpoint, Extent, Face, Intrinsic, Kind, Node,
-    NodeId, OccId, Position, Profile, WorkPlane,
+    NodeId, OccId, Position, Profile, Rgba, Tip, WorkPlane,
 };
 use engine::camera::{Ray, View};
 use engine::pick::{Hit, on_plane};
@@ -24,8 +24,29 @@ pub enum Tool {
     Select,
     Draw(Profile),
     PushPull,
-    Connect,
+    Connect(Tip),
+    Text,
+    Note,
 }
+
+/// What a click with the Text or Note tool places.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Placed {
+    Text,
+    Note,
+}
+
+impl Placed {
+    /// Cells across and down the work plane, counting both end cells.
+    fn size(self) -> (i32, i32) {
+        match self {
+            Placed::Text => (6, 1),
+            Placed::Note => (4, 4),
+        }
+    }
+}
+
+const NOTE_FILL: Rgba = Rgba([255, 214, 102, 255]);
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Mods {
@@ -101,6 +122,13 @@ pub enum DocOp {
     Connect {
         from: Endpoint,
         to: Endpoint,
+        tip: Tip,
+    },
+    /// A new node the shell opens for typing on `face`.
+    Place {
+        what: Placed,
+        bounds: CellBox,
+        face: Face,
     },
     Set(Vec<Change>),
     Delete(Vec<NodeId>),
@@ -155,6 +183,7 @@ pub enum Mode {
         grab: Grab,
     },
     Connecting {
+        tip: Tip,
         from: Endpoint,
         /// World point the preview line starts at.
         start: DVec3,
@@ -228,7 +257,21 @@ pub fn step(state: State, event: Event, tool: Tool, cx: Ctx) -> (State, Vec<Comm
             Mode::Panning { last: p.px }
         }
         (Mode::Idle, Event::Down(Button::Primary, p)) => {
-            press(tool, p, cx, &mut selection, &mut plane)
+            let placed = match tool {
+                Tool::Text => Some(Placed::Text),
+                Tool::Note => Some(Placed::Note),
+                _ => None,
+            };
+            match placed {
+                Some(what) => {
+                    plane = work_plane(&p, cx);
+                    if let Some((_, at)) = on_plane(&p.ray, &plane) {
+                        out.push(Command::Doc(place(what, plane.normal, at)));
+                    }
+                    Mode::Idle
+                }
+                None => press(tool, p, cx, &mut selection, &mut plane),
+            }
         }
 
         (Mode::Orbiting { last }, Event::Move(p)) => {
@@ -344,19 +387,25 @@ pub fn step(state: State, event: Event, tool: Tool, cx: Ctx) -> (State, Vec<Comm
         }
         (Mode::PushPull { .. } | Mode::GizmoDrag { .. }, Event::Up(_)) => Mode::Idle,
 
-        (Mode::Connecting { from, start, .. }, Event::Move(p)) => {
+        (
+            Mode::Connecting {
+                tip, from, start, ..
+            },
+            Event::Move(p),
+        ) => {
             let (to, end) = endpoint(&p, cx, &plane);
             Mode::Connecting {
+                tip,
                 from,
                 start,
                 to,
                 end,
             }
         }
-        (Mode::Connecting { from, .. }, Event::Up(p)) => {
+        (Mode::Connecting { tip, from, .. }, Event::Up(p)) => {
             let (to, _) = endpoint(&p, cx, &plane);
             if to != from {
-                out.push(Command::Doc(DocOp::Connect { from, to }));
+                out.push(Command::Doc(DocOp::Connect { from, to, tip }));
             }
             Mode::Idle
         }
@@ -426,10 +475,7 @@ fn press(
 ) -> Mode {
     match tool {
         Tool::Draw(profile) => {
-            *plane = cx
-                .locked
-                .or_else(|| p.hit.as_ref().and_then(face_plane))
-                .unwrap_or(GROUND);
+            *plane = work_plane(&p, cx);
             match on_plane(&p.ray, plane) {
                 Some((_, from)) => Mode::Drawing {
                     profile,
@@ -455,9 +501,10 @@ fn press(
                 delta: 0,
             }
         }
-        Tool::Connect => {
+        Tool::Connect(tip) => {
             let (from, start) = endpoint(&p, cx, plane);
             Mode::Connecting {
+                tip,
                 from,
                 start,
                 to: from,
@@ -505,6 +552,29 @@ fn press(
             }
             Mode::Idle
         }
+        Tool::Text | Tool::Note => Mode::Idle,
+    }
+}
+
+/// The plane a new shape lands on: the floor lock, else the face under the
+/// pointer, else the ground.
+fn work_plane(p: &Pointer, cx: Ctx) -> WorkPlane {
+    cx.locked
+        .or_else(|| p.hit.as_ref().and_then(face_plane))
+        .unwrap_or(GROUND)
+}
+
+fn place(what: Placed, normal: Face, at: CellVec) -> DocOp {
+    let (across, down) = what.size();
+    let corner = match face_axis(normal) {
+        0 => CellVec::new(0, across - 1, down - 1),
+        1 => CellVec::new(across - 1, 0, down - 1),
+        _ => CellVec::new(across - 1, down - 1, 0),
+    };
+    DocOp::Place {
+        what,
+        bounds: drawn(normal, at, at.offset(corner)),
+        face: normal,
     }
 }
 
@@ -788,14 +858,43 @@ pub fn changes(
                 Change::set(id, Attr::Axis(axis)),
             ]
         }
-        DocOp::Connect { from, to } => {
+        DocOp::Connect { from, to, tip } => {
             let id = mint();
             vec![
                 Change::kind(id, Kind::Connector),
                 Change::place(id, doc.slot(page, Position::Last)),
                 Change::intrinsic(id, Intrinsic::From(from)),
                 Change::intrinsic(id, Intrinsic::To(to)),
+                Change::set(id, Attr::Tip(tip)),
             ]
+        }
+        DocOp::Place { what, bounds, face } => {
+            let id = mint();
+            let mut out = vec![
+                Change::kind(
+                    id,
+                    match what {
+                        Placed::Text => Kind::Text,
+                        Placed::Note => Kind::Shape,
+                    },
+                ),
+                Change::place(id, doc.slot(page, Position::Last)),
+                Change::set(id, Attr::X(bounds.min.x)),
+                Change::set(id, Attr::Y(bounds.min.y)),
+                Change::set(id, Attr::Z(bounds.min.z)),
+                Change::set(id, Attr::W(bounds.w)),
+                Change::set(id, Attr::H(bounds.h)),
+                Change::set(id, Attr::D(bounds.d)),
+                Change::set(id, Attr::TextFace(face)),
+            ];
+            if what == Placed::Note {
+                out.extend([
+                    Change::set(id, Attr::Profile(Profile::Rect)),
+                    Change::set(id, Attr::Axis(normal_axis(face))),
+                    Change::set(id, Attr::Fill(NOTE_FILL)),
+                ]);
+            }
+            out
         }
         DocOp::Set(c) => c,
         DocOp::Delete(nodes) => nodes.into_iter().map(Change::detach).collect(),
@@ -1147,7 +1246,7 @@ mod tests {
         let c = b.shape(page, Profile::Rect, Axis::Z, [6, 0, 0], [2, 2, 2], [0; 4]);
         let (s, cmds) = run(
             &b,
-            Tool::Connect,
+            Tool::Connect(Tip::Arrow),
             State::default(),
             vec![
                 Event::Down(
@@ -1164,6 +1263,7 @@ mod tests {
             vec![Command::Doc(DocOp::Connect {
                 from: Endpoint::Node(a),
                 to: Endpoint::Node(c),
+                tip: Tip::Arrow,
             })]
         );
     }
@@ -1174,7 +1274,7 @@ mod tests {
         let a = boxed(&mut b, [0, 0, 0], [2, 2, 2]);
         let (_, cmds) = run(
             &b,
-            Tool::Connect,
+            Tool::Connect(Tip::Arrow),
             State::default(),
             vec![
                 Event::Down(
@@ -1189,14 +1289,88 @@ mod tests {
             vec![Command::Doc(DocOp::Connect {
                 from: Endpoint::Node(a),
                 to: Endpoint::Free(CellVec::new(7, 3, 0)),
+                tip: Tip::Arrow,
             })]
         );
     }
 
     #[test]
+    fn the_line_tool_draws_a_connector_without_a_tip() {
+        let b = Builder::new();
+        let (_, cmds) = run(
+            &b,
+            Tool::Connect(Tip::None),
+            State::default(),
+            vec![
+                Event::Down(Button::Primary, above(0.0, 0.0)),
+                Event::Up(above(5.0, 0.0)),
+            ],
+        );
+        assert_eq!(
+            cmds,
+            vec![Command::Doc(DocOp::Connect {
+                from: Endpoint::Free(CellVec::new(0, 0, 0)),
+                to: Endpoint::Free(CellVec::new(5, 0, 0)),
+                tip: Tip::None,
+            })]
+        );
+    }
+
+    #[test]
+    fn a_click_places_text_and_a_note_on_the_ground_and_they_open_for_typing() {
+        let b = Builder::new();
+        for (tool, what, (w, h)) in [
+            (Tool::Text, Placed::Text, (6, 1)),
+            (Tool::Note, Placed::Note, (4, 4)),
+        ] {
+            let (s, cmds) = run(
+                &b,
+                tool,
+                State::default(),
+                vec![Event::Down(Button::Primary, above(2.0, 3.0))],
+            );
+            assert_eq!(
+                s.mode,
+                Mode::Idle,
+                "the shell opens the editor once it has the id"
+            );
+            assert_eq!(
+                cmds,
+                vec![Command::Doc(DocOp::Place {
+                    what,
+                    bounds: CellBox {
+                        min: CellVec::new(2, 3, 0),
+                        w: Extent(w),
+                        h: Extent(h),
+                        d: Extent(0),
+                    },
+                    face: Face::PosZ,
+                })]
+            );
+        }
+    }
+
+    #[test]
+    fn a_note_is_a_yellow_flat_rectangle_facing_its_plane() {
+        let b = Builder::new();
+        let op = place(Placed::Note, Face::PosZ, CellVec::new(0, 0, 0));
+        let id = NodeId::ROOT;
+        let changes = changes(op, b.doc(), NodeId::ROOT, &mut || id);
+        for want in [
+            Change::kind(id, Kind::Shape),
+            Change::set(id, Attr::Profile(Profile::Rect)),
+            Change::set(id, Attr::Fill(NOTE_FILL)),
+            Change::set(id, Attr::TextFace(Face::PosZ)),
+            Change::set(id, Attr::D(Extent(0))),
+        ] {
+            assert!(changes.contains(&want), "missing {want:?}");
+        }
+    }
+
+    #[test]
     fn escape_cancels_a_draft_with_no_writes() {
         let b = Builder::new();
-        for tool in [Tool::Draw(Profile::Hexagon), Tool::Connect] {
+        for tool in [Tool::Draw(Profile::Hexagon), Tool::Connect(Tip::Arrow)] {
             let (s, cmds) = run(
                 &b,
                 tool,

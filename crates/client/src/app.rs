@@ -5,7 +5,7 @@ use std::time::Duration;
 use client::components;
 use client::interaction::{Button, Event, Key, Mode, Tool};
 use client::look::{self, FIELDS};
-use doc::Profile;
+use doc::{Profile, Tip};
 use engine::{HoloParams, View};
 use leptos::ev;
 use leptos::html;
@@ -59,14 +59,17 @@ fn blur_text() {
     }
 }
 
-const TOOLS: [(Tool, &str, &str); 7] = [
+const TOOLS: [(Tool, &str, &str); 10] = [
     (Tool::Select, "Select", "V"),
-    (Tool::Draw(Profile::Rect), "Rect", "R"),
-    (Tool::Draw(Profile::Ellipse), "Ellipse", "E"),
+    (Tool::Draw(Profile::Rect), "Rectangle", "R"),
     (Tool::Draw(Profile::Diamond), "Diamond", "D"),
+    (Tool::Draw(Profile::Ellipse), "Ellipse", "O"),
     (Tool::Draw(Profile::Hexagon), "Hexagon", "H"),
-    (Tool::PushPull, "Push/Pull", "P"),
-    (Tool::Connect, "Connect", "C"),
+    (Tool::Connect(Tip::Arrow), "Arrow", "A"),
+    (Tool::Connect(Tip::None), "Line", "L"),
+    (Tool::Text, "Text", "T"),
+    (Tool::Note, "Note", "N"),
+    (Tool::PushPull, "Push/Pull", "U"),
 ];
 
 fn on_key(sv: Sv, ui: Ui, e: KeyboardEvent) {
@@ -81,6 +84,7 @@ fn on_key(sv: Sv, ui: Ui, e: KeyboardEvent) {
         "y" if cmd => Some(Key::Redo),
         "Escape" => Some(Key::Escape),
         "Delete" | "Backspace" => Some(Key::Delete),
+        "e" | "E" if !cmd && !e.alt_key() => Some(Key::Delete),
         "1" => Some(Key::View(View::Front)),
         "2" => Some(Key::View(View::Side)),
         "3" => Some(Key::View(View::Top)),
@@ -112,7 +116,7 @@ fn on_key(sv: Sv, ui: Ui, e: KeyboardEvent) {
             e.prevent_default();
             act(sv, |ed| ed.step_floor(false));
         }
-        "l" | "L" => ui.lab.update(|v| *v = !*v),
+        "g" | "G" => ui.lab.update(|v| *v = !*v),
         "k" | "K" => ui.library.update(|v| *v = !*v),
         _ => {}
     }
@@ -303,19 +307,23 @@ fn Toolbar(sv: Sv, ui: Ui) -> impl IntoView {
                             on:click=move |_| act(sv, |ed| ed.set_tool(t))
                         >
                             {label}
+                            <kbd>{k}</kbd>
                         </button>
                     }
                 })
                 .collect_view()}
             <span class="sep"></span>
-            <button title="Delete (Del)" on:click=key(Key::Delete)>
-                "Delete"
+            <button title="Eraser (E, Del)" on:click=key(Key::Delete)>
+                "Eraser"
+                <kbd>"E"</kbd>
             </button>
             <button title="Undo (Cmd/Ctrl+Z)" on:click=key(Key::Undo)>
                 "Undo"
+                <kbd>"⌘Z"</kbd>
             </button>
             <button title="Redo (Shift+Cmd/Ctrl+Z)" on:click=key(Key::Redo)>
                 "Redo"
+                <kbd>"⇧⌘Z"</kbd>
             </button>
             <span class="sep"></span>
             <button
@@ -337,7 +345,7 @@ fn Toolbar(sv: Sv, ui: Ui) -> impl IntoView {
             </button>
             <button
                 class:on=move || ui.lab.get()
-                title="Look lab (L)"
+                title="Look lab (G)"
                 on:click=move |_| ui.lab.update(|v| *v = !*v)
             >
                 "Look lab"

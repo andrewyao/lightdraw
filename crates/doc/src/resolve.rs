@@ -8,7 +8,7 @@
 use crate::doc::Doc;
 use crate::model::{
     Attr, AttrKey, Axis, CellBox, CellVec, Endpoint, Extent, Face, Intrinsic, IntrinsicKey, Kind,
-    NodeId, OverridePath, Point3, Profile, Prop, PropKey, Rgba,
+    NodeId, OverridePath, Point3, Profile, Prop, PropKey, Rgba, Tip,
 };
 
 /// Fields shared by every node that occupies space.
@@ -54,6 +54,7 @@ pub enum Node<'a> {
         to: Endpoint,
         label: Option<Label<'a>>,
         stroke: Option<Rgba>,
+        tip: Tip,
     },
     Component(Body<'a>),
     /// Stores no children. Its size is the master's.
@@ -116,6 +117,7 @@ pub enum Item<'a> {
         to: End,
         label: Option<Label<'a>>,
         stroke: Option<Rgba>,
+        tip: Tip,
     },
     Scene(Camera),
 }
@@ -211,11 +213,13 @@ impl<'a> Occurrences<'a> {
                 to,
                 label,
                 stroke,
+                tip,
             } => Item::Connector {
                 from: doc.end(&v.via, v.origin, from)?,
                 to: doc.end(&v.via, v.origin, to)?,
                 label,
                 stroke,
+                tip,
             },
             Node::Instance { component, origin } => {
                 let world = CellBox {
@@ -458,6 +462,10 @@ impl Doc {
                 to: endpoint(IntrinsicKey::To)?,
                 label: label(),
                 stroke: color(AttrKey::Stroke),
+                tip: match a(AttrKey::Tip) {
+                    Some(Attr::Tip(t)) => *t,
+                    _ => Tip::default(),
+                },
             },
             Kind::Component => Node::Component(body()),
             Kind::Instance => Node::Instance {

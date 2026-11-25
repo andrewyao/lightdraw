@@ -30,7 +30,7 @@ pub enum Look {
     /// an outline.
     Text,
     /// An orthogonal path along the lattice, already clipped at both ends.
-    Connector { path: Vec<DVec3> },
+    Connector { path: Vec<DVec3>, tip: doc::Tip },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -283,6 +283,9 @@ pub(crate) fn to_linear(Rgba([r, g, b, a]): Rgba) -> [f32; 4] {
 /// Half the drawn width of a connector or outline, in cells.
 pub const LINE_RADIUS: f64 = 0.06;
 
+/// Half the widest step of an arrowhead, in cells.
+pub const TIP_RADIUS: f64 = 0.3;
+
 fn make(id: OccId, item: &Item<'_>, parent: Option<Slot>) -> Option<Entry> {
     let label = |l: &Option<doc::Label<'_>>| l.map(|l| (l.text.to_string(), l.face));
     let (look, (min, max), color, label) = match item {
@@ -317,15 +320,19 @@ fn make(id: OccId, item: &Item<'_>, parent: Option<Slot>) -> Option<Entry> {
             to,
             label: l,
             stroke,
+            tip,
         } => {
             let path = route::route(from, to);
             let (lo, hi) = path.iter().fold(
                 (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY)),
                 |(lo, hi), p| (lo.min(*p), hi.max(*p)),
             );
-            let r = DVec3::splat(LINE_RADIUS);
+            let r = DVec3::splat(match tip {
+                doc::Tip::None => LINE_RADIUS,
+                doc::Tip::Arrow => TIP_RADIUS,
+            });
             (
-                Look::Connector { path },
+                Look::Connector { path, tip: *tip },
                 (lo - r, hi + r),
                 linear(*stroke, DEFAULT_LINK),
                 label(l),
@@ -464,7 +471,7 @@ pub(crate) mod tests {
         );
         let wire_after = scene.get(&wire).unwrap();
         assert_ne!(wire_after.max, wire_before.max, "the connector re-routed");
-        let Look::Connector { path } = &wire_after.look else {
+        let Look::Connector { path, .. } = &wire_after.look else {
             panic!("not a connector")
         };
         let end = *path.last().unwrap();

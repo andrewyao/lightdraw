@@ -130,7 +130,7 @@ pub fn link_at(
 ) -> Option<NodeId> {
     let mut best: Option<(f64, NodeId)> = None;
     for e in scene.entries() {
-        let Look::Connector { path } = &e.look else {
+        let Look::Connector { path, .. } = &e.look else {
             continue;
         };
         let pts: Vec<[f64; 2]> = path.iter().filter_map(|p| cam.project(*p, size)).collect();
@@ -304,7 +304,7 @@ pub fn svg(f: &Frame) -> String {
     if let Some(h) = f.hover.filter(|h| !f.state.selection.contains(h))
         && let Some(b) = world(f.doc, h)
     {
-        let style = if f.tool == Tool::Connect {
+        let style = if matches!(f.tool, Tool::Connect(_)) {
             format!("stroke: #ffd75a; stroke-width: {}", 2.0 * w)
         } else {
             format!("stroke: rgba(180,240,255,0.45); stroke-width: {w}")
@@ -317,7 +317,7 @@ pub fn svg(f: &Frame) -> String {
             Some(b) => s.cube(b, &format!("stroke: #fff; stroke-width: {}", 1.5 * w)),
             None => {
                 for e in f.scene.entries().filter(|e| e.id.selects() == *n) {
-                    if let Look::Connector { path } = &e.look {
+                    if let Look::Connector { path, .. } = &e.look {
                         s.poly(
                             path,
                             false,

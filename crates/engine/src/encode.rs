@@ -8,7 +8,7 @@ use glam::DVec3;
 
 use crate::camera::Camera;
 use crate::mesh;
-use crate::scene::{LINE_RADIUS, Look, Scene};
+use crate::scene::{LINE_RADIUS, Look, Scene, TIP_RADIUS};
 pub use crate::text::GlyphInstance;
 use crate::text::{self, Atlas, Eye};
 
@@ -77,9 +77,12 @@ impl DrawList {
                     ));
                 }
                 Look::Group | Look::Text => outline(&mut self.lines, e.min, e.max, eye, e.color),
-                Look::Connector { path } => {
+                Look::Connector { path, tip } => {
                     for w in path.windows(2) {
                         segment(&mut self.lines, w[0], w[1], eye, e.color);
+                    }
+                    if let (doc::Tip::Arrow, [.., a, b]) = (tip, path.as_slice()) {
+                        arrowhead(&mut self.lines, *a, *b, eye, e.color);
                     }
                 }
             }
@@ -99,6 +102,26 @@ fn segment(out: &mut Vec<Instance>, a: DVec3, b: DVec3, eye: DVec3, color: [f32;
     let r = DVec3::splat(LINE_RADIUS);
     let (lo, hi) = (a.min(b) - r, a.max(b) + r);
     out.push(instance(lo - eye, AXIS_Z, hi - lo, color));
+}
+
+/// A stepped pyramid pointing at `b`. Instances are axis-aligned boxes, and
+/// routed paths are axis-aligned, so the head is built from widening slabs.
+fn arrowhead(out: &mut Vec<Instance>, a: DVec3, b: DVec3, eye: DVec3, color: [f32; 4]) {
+    const STEPS: u32 = 4;
+    const LENGTH: f64 = 0.6;
+    let Some(d) = (b - a).try_normalize() else {
+        return;
+    };
+    let len = LENGTH.min(a.distance(b));
+    let step = len / f64::from(STEPS);
+    let across = DVec3::ONE - d.abs();
+    for k in 0..STEPS {
+        let near = b - d * step * f64::from(k);
+        let far = near - d * step;
+        let half = across * TIP_RADIUS * f64::from(k + 1) / f64::from(STEPS);
+        let (lo, hi) = (near.min(far) - half, near.max(far) + half);
+        out.push(instance(lo - eye, AXIS_Z, hi - lo, color));
+    }
 }
 
 /// The twelve edges of a box.
@@ -160,6 +183,39 @@ mod tests {
         list.encode(&scene, &looking_at_box(0.8, 2000.0), [800, 600]);
         assert!(list.glyphs.is_empty(), "under the LOD threshold far away");
         assert_eq!(list.len(), 1, "the box itself still draws");
+    }
+
+    #[test]
+    fn an_arrow_draws_a_head_at_its_to_end_and_a_line_does_not() {
+        let mut b = Builder::new();
+        let page = b.page();
+        let free = |x| Endpoint::Free(doc::CellVec::new(x, 0, 0));
+        let wire = b.connector(page, free(0), free(4));
+        let cam = Camera {
+            target: DVec3::new(2.0, 0.0, 0.0),
+            pitch: 0.8,
+            distance: 20.0,
+            ..Camera::default()
+        };
+        let mut list = DrawList::default();
+        list.encode(&Scene::build(b.doc(), page), &cam, [800, 600]);
+        let line = list.lines.len();
+
+        b.edit(vec![doc::Change::set(
+            wire,
+            doc::Attr::Tip(doc::Tip::Arrow),
+        )]);
+        list.encode(&Scene::build(b.doc(), page), &cam, [800, 600]);
+        let head = &list.lines[line..];
+        assert_eq!(head.len(), 4, "one slab per step");
+        let eye = cam.eye();
+        let x = |i: &Instance, k| f64::from(i[k]) + eye.x;
+        let (tip, base) = (&head[0], &head[3]);
+        assert!(
+            (x(tip, 0) + f64::from(tip[4]) - 4.0).abs() < 1e-3,
+            "touches the To end"
+        );
+        assert!(base[5] > tip[5], "widens away from the tip");
     }
 
     #[test]

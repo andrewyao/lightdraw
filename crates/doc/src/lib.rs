@@ -25,7 +25,7 @@ pub use doc::{Dirty, Doc, Position, Reject};
 pub use model::{
     Attr, AttrKey, Axis, Cell, CellBox, CellVec, Change, ClientId, Endpoint, Extent, Face,
     FracIndex, Intrinsic, IntrinsicKey, Kind, NodeId, OverridePath, Place, Point3, Profile, Prop,
-    PropKey, Rgba, Write,
+    PropKey, Rgba, Tip, Write,
 };
 pub use replica::{BatchNo, Edit, Presence, Presenting, Rejected, Replica, Update, WorkPlane};
 pub use resolve::{Body, Camera, End, Item, Label, Node, OccId, Occurrence, Occurrences, Solid};

@@ -359,7 +359,7 @@ pub(crate) fn emit(out: &mut Vec<GlyphInstance>, atlas: &mut Atlas, e: &Entry, e
         return;
     }
     let card = match &e.look {
-        Look::Connector { path } => {
+        Look::Connector { path, .. } => {
             let up = eye.basis.up;
             Card {
                 centre: midpoint(path) + up * (f64::from(layout.height()) / 2.0 + CARD_LIFT),

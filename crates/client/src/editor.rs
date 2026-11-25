@@ -172,7 +172,7 @@ impl Editor {
         for c in cmds {
             self.run(c);
         }
-        if idle {
+        if idle && self.state.mode == Mode::Idle {
             self.history.end();
         }
     }
@@ -184,8 +184,19 @@ impl Editor {
                 let Some(rep) = self.collab.replica_mut() else {
                     return;
                 };
-                let minted = matches!(op, DocOp::Create { .. } | DocOp::Connect { .. })
-                    .then(|| rep.new_id());
+                let minted = matches!(
+                    op,
+                    DocOp::Create { .. } | DocOp::Connect { .. } | DocOp::Place { .. }
+                )
+                .then(|| rep.new_id());
+                let typing = match op {
+                    DocOp::Place { face, .. } => Some(face),
+                    _ => None,
+                };
+                if typing.is_some() {
+                    // The placement and the first text share one undo step.
+                    self.history.begin();
+                }
                 let changes = interaction::changes(op, rep.doc(), page, &mut || {
                     minted.expect("an id is minted for every create")
                 });
@@ -193,6 +204,12 @@ impl Editor {
                     && let Some(id) = minted
                 {
                     self.state.selection = vec![id];
+                    if let Some(face) = typing {
+                        self.state.mode = Mode::EditingText {
+                            node: id,
+                            face: Some(face),
+                        };
+                    }
                 }
             }
             Command::Abort => {

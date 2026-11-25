@@ -28,7 +28,8 @@ pub fn room_from_hash(hash: &str) -> String {
     }
 }
 
-/// `ws(s)://<this page's host>/ws/<room>`.
+/// `ws(s)://<this page's host><this page's directory>ws/<room>`, so the app
+/// works under a path prefix such as `/draw/`.
 pub fn url(room: &str) -> String {
     let loc = web_sys::window().expect("window").location();
     let scheme = match loc.protocol().as_deref() {
@@ -36,7 +37,13 @@ pub fn url(room: &str) -> String {
         _ => "ws",
     };
     let host = loc.host().unwrap_or_else(|_| "localhost:8080".into());
-    format!("{scheme}://{host}/ws/{room}")
+    let path = loc.pathname().unwrap_or_default();
+    format!("{scheme}://{host}{}ws/{room}", dir(&path))
+}
+
+/// Everything up to and including the last `/`.
+fn dir(path: &str) -> &str {
+    path.rfind('/').map_or("/", |i| &path[..=i])
 }
 
 /// What one server frame did.
