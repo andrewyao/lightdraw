@@ -8,7 +8,7 @@ clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
 wasm:
-    cargo check -p doc -p engine -p client --target wasm32-unknown-unknown
+    cargo check -p doc -p engine -p client -p cloudflare --target wasm32-unknown-unknown
 
 web:
     cd crates/client && trunk build

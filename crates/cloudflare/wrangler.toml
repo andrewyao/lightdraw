@@ -1,0 +1,17 @@
+name = "lightdraw"
+main = "build/index.js"
+compatibility_date = "2026-11-01"
+# Runs before andrewyao.app's custom domain Worker, which serves the client
+# at /draw/ as a static asset.
+routes = [{ pattern = "andrewyao.app/draw/ws/*", zone_name = "andrewyao.app" }]
+
+[build]
+command = "worker-build --release"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]

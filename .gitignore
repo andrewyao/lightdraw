@@ -2,3 +2,7 @@ target/
 dist/
 data/
 .DS_Store
+.tools/
+node_modules/
+.wrangler/
+crates/cloudflare/build/
