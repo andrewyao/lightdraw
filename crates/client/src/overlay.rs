@@ -104,14 +104,18 @@ fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
 const HANDLE_PX: f64 = 5.0;
 
 /// The resize handles: in 2D, the top corners of the one selected node, when
-/// its size is its own.
+/// its size is its own and it spans at least a cell in x and y. A shape
+/// standing on its side has no footprint to resize.
 pub fn handles(doc: &Doc, selection: &[NodeId], dimension: Dimension) -> Vec<Handle> {
     let ([node], Dimension::Two) = (selection, dimension) else {
         return Vec::new();
     };
-    let (Some(_), Some(b)) = (sized_box(doc, *node), world(doc, *node)) else {
+    let (Some(own), Some(b)) = (sized_box(doc, *node), world(doc, *node)) else {
         return Vec::new();
     };
+    if own.w.0 == 0 || own.h.0 == 0 {
+        return Vec::new();
+    }
     let (lo, hi) = corners(b);
     Corner::ALL
         .into_iter()
@@ -567,6 +571,21 @@ mod tests {
         let (c, len) = gizmo(b.doc(), &[n]).expect("selection has a box");
         let axes: Vec<Axis> = arrows(c, len, &cam, size).map(|a| a.0).collect();
         assert_eq!(axes, [Axis::X, Axis::Y]);
+    }
+
+    #[test]
+    fn a_shape_standing_on_its_side_gets_no_corner_handles() {
+        let mut b = Builder::new();
+        let page = b.page();
+        let side = b.shape(
+            page,
+            doc::Profile::Ellipse,
+            Axis::X,
+            [0, 0, 0],
+            [0, 3, 2],
+            [0; 4],
+        );
+        assert!(handles(b.doc(), &[side], Dimension::Two).is_empty());
     }
 
     #[test]

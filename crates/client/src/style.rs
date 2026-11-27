@@ -4,14 +4,12 @@
 //! Current values come from the scene's resolved `Shade`, so a shape with no
 //! style attrs shows the colours it is drawn with, not blanks.
 
-use doc::{Attr, Change, Doc, NodeId, OccId, Rgba};
+use doc::{Attr, Change, Doc, Node, NodeId, OccId, Rgba};
 use engine::Scene;
 use engine::scene::Shade;
 
-use crate::interaction::sized_box;
-
 /// One shape's style in sRGB bytes, as the panel's inputs show it.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Style {
     pub text: [u8; 3],
     pub stroke: [u8; 3],
@@ -68,12 +66,13 @@ pub const PAPER: [Swatch; 11] = [
     ("Pink", [252, 194, 215]),
 ];
 
-/// The selected nodes that have a body to style.
+/// The selected shapes. Frames, text, and components draw as outlines that
+/// ignore most of the panel, so they are left out.
 pub fn styled(doc: &Doc, selection: &[NodeId]) -> Vec<NodeId> {
     selection
         .iter()
         .copied()
-        .filter(|n| sized_box(doc, *n).is_some())
+        .filter(|n| matches!(doc.node(*n), Some(Node::Shape { .. })))
         .collect()
 }
 
@@ -177,6 +176,15 @@ mod tests {
             changes(&scene, &[n], Edit::StrokeWidth(99)),
             vec![Change::set(n, Attr::StrokeWidth(MAX_STROKE_PX))]
         );
+    }
+
+    #[test]
+    fn only_shapes_in_the_selection_are_styled() {
+        let (mut b, n, _) = scene_with([255; 4]);
+        let page = b.doc().parent(n).unwrap();
+        let frame = b.frame(page, [5, 5, 0], [2, 2, 0]);
+        let text = b.node(page, doc::Kind::Text, Vec::new());
+        assert_eq!(styled(b.doc(), &[frame, n, text]), vec![n]);
     }
 
     #[test]

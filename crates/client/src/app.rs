@@ -47,15 +47,16 @@ fn typing_into(e: &KeyboardEvent) -> bool {
         .is_some_and(|el| matches!(el.tag_name().as_str(), "TEXTAREA" | "INPUT"))
 }
 
-/// A prevented pointerdown moves no focus, so an open text overlay is
-/// committed by hand. Its blur handler borrows the editor, so this runs
-/// before any borrow.
-fn blur_text() {
+/// A prevented pointerdown moves no focus, so the focused element (an open
+/// text overlay, or a panel slider or button that would swallow shortcuts)
+/// is blurred by hand. The overlay's blur handler borrows the editor, so
+/// this runs before any borrow.
+fn blur_focus() {
     let active = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.active_element())
         .and_then(|a| a.dyn_into::<web_sys::HtmlElement>().ok());
-    if let Some(a) = active.filter(|a| a.tag_name() == "TEXTAREA") {
+    if let Some(a) = active {
         let _ = a.blur();
     }
 }
@@ -199,7 +200,7 @@ pub fn App() -> impl IntoView {
                 class="stage"
                 on:pointerdown=move |e: PointerEvent| {
                     e.prevent_default();
-                    blur_text();
+                    blur_focus();
                     if let Some(t) = e.target().and_then(|t| t.dyn_into::<Element>().ok()) {
                         let _ = t.set_pointer_capture(e.pointer_id());
                     }
@@ -536,7 +537,7 @@ fn Swatches(
                                 title=name
                                 aria-label=format!("{label}: {name}")
                                 style:background=style::hex(c)
-                                on:click=move |_| act(sv, |ed| ed.restyle(edit(c)))
+                                on:click=move |e| commit(sv, &e, Some(edit(c)))
                             ></button>
                         }
                     })
@@ -548,7 +549,9 @@ fn Swatches(
 
 #[component]
 fn StylePanel(sv: Sv, ui: Ui) -> impl IntoView {
-    let now = move || ui.style.get().expect("shown only with a style");
+    // The Show unmounts the panel after `ui.style` turns None, and a child
+    // may re-run in between.
+    let now = move || ui.style.get().unwrap_or_default();
     let number = move |e: &leptos::ev::Event| event_target_value(e).parse::<u8>().ok();
     view! {
         <section class="panel style" data-testid="style">

@@ -86,6 +86,7 @@ impl DrawList {
                 .z
                 .total_cmp(&b.max.z)
                 .then_with(|| a.id.via.cmp(&b.id.via))
+                .then_with(|| a.stack.cmp(&b.stack))
                 .then_with(|| a.id.node.cmp(&b.id.node))
         });
         for e in visible {
@@ -244,7 +245,7 @@ mod tests {
     use super::*;
     use crate::demo::Builder;
     use crate::text::FAR_SIDE;
-    use doc::{Axis, Endpoint, Face, Profile};
+    use doc::{Axis, Change, Endpoint, Face, Profile};
 
     /// A labelled 4x4x2 box at the origin, and its scene.
     fn labelled(face: Face) -> Scene {
@@ -408,6 +409,30 @@ mod tests {
         // At 1e7 an f32 step is a whole cell, so casting before subtracting
         // would be off by up to half a cell.
         assert!((f64::from(inst[0]) - (f64::from(far) - cam.eye().x)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn shapes_at_one_height_paint_in_sibling_order_not_id_order() {
+        let mut b = Builder::new();
+        let page = b.page();
+        let red = [255, 0, 0, 255];
+        let green = [0, 255, 0, 255];
+        b.shape(page, Profile::Rect, Axis::Z, [0, 0, 0], [2, 2, 0], red);
+        let newer = b.shape(page, Profile::Rect, Axis::Z, [0, 0, 0], [2, 2, 0], green);
+        let bottom = b.doc().slot(page, doc::Position::First);
+        b.edit(vec![Change::place(newer, bottom)]);
+        let scene = Scene::build(b.doc(), page);
+        let mut list = DrawList::default();
+        list.encode(&scene, &Camera::default(), [800, 600]);
+        let fills: Vec<[bool; 2]> = list.solids[mesh::index(Profile::Rect)]
+            .iter()
+            .map(|i| [i[8] > 0.5, i[9] > 0.5])
+            .collect();
+        assert_eq!(
+            fills,
+            vec![[false, true], [true, false]],
+            "the newer shape moved to the bottom paints first, under the older one"
+        );
     }
 
     #[test]

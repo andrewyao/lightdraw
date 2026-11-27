@@ -46,6 +46,9 @@ pub struct Entry {
     pub label: Option<(String, Face)>,
     /// `label` laid out, on first draw. See `text`.
     pub(crate) text: LayoutCache,
+    /// Sibling order key. New nodes go last, so among siblings it is also
+    /// creation order, and the flat style paints later siblings on top.
+    pub(crate) stack: Option<doc::FracIndex>,
     parent: Option<Slot>,
     kids: Vec<Slot>,
 }
@@ -255,7 +258,8 @@ impl Scene {
             } else {
                 stack.last().copied()
             };
-            let Some(entry) = make(occ.id, &occ.item, above) else {
+            let order = doc.place(occ.id.node).map(|p| p.index.clone());
+            let Some(entry) = make(occ.id, &occ.item, order, above) else {
                 continue;
             };
             if let Some(old) = self.by_id.get(&entry.id).copied() {
@@ -343,7 +347,12 @@ pub const LINE_RADIUS: f64 = 0.06;
 /// Half the widest step of an arrowhead, in cells.
 pub const TIP_RADIUS: f64 = 0.3;
 
-fn make(id: OccId, item: &Item<'_>, parent: Option<Slot>) -> Option<Entry> {
+fn make(
+    id: OccId,
+    item: &Item<'_>,
+    stack: Option<doc::FracIndex>,
+    parent: Option<Slot>,
+) -> Option<Entry> {
     let label = |l: &Option<doc::Label<'_>>| l.map(|l| (l.text.to_string(), l.face));
     let (look, (min, max), shade, label) = match item {
         Item::Scene(_) => return None,
@@ -404,6 +413,7 @@ fn make(id: OccId, item: &Item<'_>, parent: Option<Slot>) -> Option<Entry> {
         shade,
         label,
         text: LayoutCache::default(),
+        stack,
         parent,
         kids: Vec::new(),
     })

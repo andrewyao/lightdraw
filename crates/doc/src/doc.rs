@@ -137,7 +137,7 @@ impl Doc {
         }
     }
 
-    pub(crate) fn place(&self, node: NodeId) -> Option<&Place> {
+    pub fn place(&self, node: NodeId) -> Option<&Place> {
         match self.prop(node, &PropKey::PLACE)? {
             Prop::Intrinsic(Intrinsic::Place(p)) => Some(p),
             _ => None,
